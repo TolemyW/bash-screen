@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Phase0 Fixture</title>
+<style>
+  body { font: 16px sans-serif; margin: 24px; }
+  fieldset { margin-bottom: 16px; }
+  #canvas-btn { border: 1px solid #888; }
+  .spacer { height: 1400px; background: linear-gradient(#fff, #dde); }
+</style>
+</head>
+<body>
+<h1>Phase0 Fixture</h1>
+<p id="status">status: idle</p>
+
+<!-- Every interaction is reported to the server, whose log is the test oracle. -->
+<form id="f" action="/submit" method="get">
+  <fieldset>
+    <legend>Form</legend>
+    <label>Name <input type="text" name="name" id="name"></label>
+    <label>Note <textarea name="note" id="note" rows="2"></textarea></label>
+    <label><input type="checkbox" name="agree" id="agree" value="yes"> I agree</label>
+    <label>Color
+      <select name="color" id="color">
+        <option value="red">Red</option>
+        <option value="green">Green</option>
+        <option value="blue">Blue</option>
+      </select>
+    </label>
+    <button type="submit" id="send">Send</button>
+  </fieldset>
+</form>
+
+<button id="counter">Count: 0</button>
+<a href="/page2.html" id="link">Go to page two</a>
+
+<p>A control with no accessible semantics, drawn on a canvas:</p>
+<canvas id="canvas-btn" width="200" height="60"></canvas>
+
+<div class="spacer"></div>
+<button id="bottom">Bottom button</button>
+
+<script>
+  const report = (what) => fetch('/event?what=' + encodeURIComponent(what));
+  let n = 0;
+  document.getElementById('counter').addEventListener('click', (e) => {
+    n += 1; e.target.textContent = 'Count: ' + n; report('counter=' + n);
+    document.getElementById('status').textContent = 'status: counted ' + n;
+  });
+  document.getElementById('bottom').addEventListener('click', () => report('bottom'));
+  const c = document.getElementById('canvas-btn');
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#2a6'; ctx.fillRect(0, 0, 200, 60);
+  ctx.fillStyle = '#fff'; ctx.font = '20px sans-serif'; ctx.fillText('Canvas click', 40, 36);
+  c.addEventListener('click', (e) => report('canvas@' + e.offsetX + ',' + e.offsetY));
+</script>
+</body>
+</html>

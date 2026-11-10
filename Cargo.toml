@@ -1,0 +1,20 @@
+[package]
+name = "bash-screen"
+version = "0.1.0"
+edition = "2021"
+description = "Let an agent operate GUI apps on a remote Linux host over SSH, with a live terminal preview"
+
+[dependencies]
+anyhow = "1"
+base64 = "0.22"
+clap = { version = "4", features = ["derive"] }
+libc = "0.2"
+image = { version = "0.25", default-features = false, features = ["png", "webp"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+terminal_size = "0.4"
+toml = "0.8"
+
+[profile.release]
+opt-level = 2
+strip = true

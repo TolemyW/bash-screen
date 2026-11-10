@@ -1,0 +1,29 @@
+id = "bash-screen"
+name = "bash-screen"
+version = "0.1.0"
+min_herdr_version = "0.7.0"
+description = "Operate GUI apps on a remote Linux host over SSH, with a live preview pane"
+platforms = ["linux", "macos"]
+
+[[build]]
+command = ["sh", "-c", "cargo build --release && mkdir -p bin && cp target/release/bash-screen bin/bash-screen"]
+
+# Opened automatically as a split beside the pane that first calls the CLI.
+[[panes]]
+id = "preview"
+title = "bash-screen preview"
+placement = "split"
+command = ["sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/bin/bash-screen\" preview"]
+
+# Bind these to keys in herdr's config to change the preview resolution from anywhere.
+[[actions]]
+id = "sharper"
+title = "bash-screen: sharper preview"
+contexts = ["workspace"]
+command = ["sh", "-c", 'exec "$HERDR_PLUGIN_ROOT/bin/bash-screen" res up']
+
+[[actions]]
+id = "coarser"
+title = "bash-screen: coarser preview"
+contexts = ["workspace"]
+command = ["sh", "-c", 'exec "$HERDR_PLUGIN_ROOT/bin/bash-screen" res down']
