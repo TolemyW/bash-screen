@@ -22,28 +22,41 @@ host with Firefox and a few GTK apps.
 
 ## Setup
 
-### Remote host
+### Install
 
-Ubuntu 24.04 or later. The remote directory must already contain the tools:
+```sh
+herdr plugin install TolemyW/bash-screen
+herdr plugin action invoke bash-screen.link-cli
+```
 
-- `root/usr/bin/Xtigervnc` and `root/usr/bin/openbox`, with their libraries
-  under `root/usr/lib/x86_64-linux-gnu`, unpacked from the distribution
-  packages (`apt-get download` and `dpkg -x` work without root);
-- `ad/node_modules/.bin/agent-desktop`, version 1.2.0
-  (`npm install --prefix ad agent-desktop@1.2.0`);
-- Python 3 with Pillow.
+The install step builds the binary and needs a Rust toolchain. The second
+command links `bash-screen` into `~/.local/bin`; herdr repeats it at every
+server start, so the link follows plugin updates. It never replaces a file
+that is not its own link.
 
-Installing these automatically is not implemented yet.
-
-### Local machine
+To work on the plugin from a checkout instead:
 
 ```sh
 cargo build --release && mkdir -p bin && cp target/release/bash-screen bin/
 herdr plugin link "$PWD"
-bin/bash-screen config --host <ssh-host> --remote-dir <remote-directory>
+herdr plugin action invoke bash-screen.link-cli
 ```
 
-Put `bin/bash-screen` on the agent's `PATH`.
+### Connect a remote host
+
+```sh
+bash-screen config --host <ssh-host>
+bash-screen setup
+```
+
+`setup` needs no root. Into the remote directory it unpacks Xvnc and openbox
+from the distribution's packages, and installs agent-desktop from npm. It can
+be run again at any time; finished steps are skipped.
+
+The remote host must be Ubuntu 24.04 or later and already have `dbus`,
+`at-spi2-core`, `xauth`, `x11-xkb-utils`, `npm`, and Python 3 with Pillow.
+`setup` checks for these and prints the `apt-get install` command an
+administrator should run if any are missing.
 
 ## Use
 
@@ -113,6 +126,11 @@ Environment variables:
 | Path | Contents |
 |---|---|
 | `src/` | The local CLI and preview (Rust) |
-| `remote/` | Files copied to the remote host: session launcher and helper |
+| `remote/` | Files copied to the remote host: installer, session launcher and helper |
 | `herdr-plugin.toml` | herdr plugin manifest |
+| `scripts/` | Helper run by the plugin to put the command on `PATH` |
 | `tests/fixture/` | Test page and request-logging server used as a test oracle |
+
+## License
+
+Apache-2.0. See `LICENSE`.

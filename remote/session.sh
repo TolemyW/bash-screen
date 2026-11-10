@@ -11,6 +11,8 @@ set -u
 BASE="${BSCREEN_BASE:-$(cd "$(dirname "$0")" && pwd)}"
 RUN="$BASE/run"
 XVNC="$BASE/root/usr/bin/Xtigervnc"
+# Libraries unpacked next to the programs by setup.sh.
+LIBDIR="$(ls -d "$BASE"/root/usr/lib/*-linux-gnu 2>/dev/null | head -1)"
 AD="$BASE/ad/node_modules/.bin/agent-desktop"
 ENVFILE="$RUN/env.sh"
 
@@ -32,7 +34,7 @@ start_wm() {
   else
     cp "$BASE/root/etc/xdg/openbox/rc.xml" "$cfg/openbox/rc.xml"
   fi
-  LD_LIBRARY_PATH="$BASE/root/usr/lib/x86_64-linux-gnu" \
+  LD_LIBRARY_PATH="$LIBDIR" \
   XDG_DATA_DIRS="$BASE/root/usr/share:/usr/local/share:/usr/share" \
     setsid nohup "$BASE/root/usr/bin/openbox" --config-file "$cfg/openbox/rc.xml" >"$RUN/wm.log" 2>&1 &
   echo $! > "$RUN/wm.pid"
@@ -50,7 +52,7 @@ start() {
   # Let the server pick a free display number and report it back.
   local fdfile="$RUN/displayfd"
   : > "$fdfile"
-  setsid nohup "$XVNC" -displayfd 3 \
+  LD_LIBRARY_PATH="$LIBDIR" setsid nohup "$XVNC" -displayfd 3 \
       -geometry "$geometry" -depth 24 \
       -rfbunixpath "$RUN/vnc.sock" -rfbunixmode 0600 -rfbport -1 \
       -SecurityTypes None -AcceptSetDesktopSize=0 \

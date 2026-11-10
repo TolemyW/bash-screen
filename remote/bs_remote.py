@@ -74,6 +74,9 @@ def session_env():
 def ensure_session(geometry):
     if session_running():
         return False
+    for tool in ("root/usr/bin/Xtigervnc", "root/usr/bin/openbox", "ad/node_modules/.bin/agent-desktop"):
+        if not os.path.exists(os.path.join(BASE, tool)):
+            raise Fail("the remote tools are not installed here; run `bash-screen setup` first")
     if os.path.isdir(RUN):
         subprocess.run([SESSION_SH, "stop"], capture_output=True)
     env = dict(os.environ, BSCREEN_BASE=BASE, BSCREEN_MAXIMIZE="1")
