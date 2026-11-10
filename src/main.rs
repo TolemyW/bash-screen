@@ -47,6 +47,8 @@ enum Cmd {
         #[arg(long)]
         geometry: Option<String>,
     },
+    /// Install the remote tools on the configured host (no root needed)
+    Setup,
     /// Start the remote GUI session (other commands start it on demand)
     Start,
     /// Stop the remote GUI session and everything running in it
@@ -262,7 +264,10 @@ fn run() -> Result<()> {
     }
 
     // Any agent-facing command brings up the preview beside the calling pane.
-    if !matches!(cli.command, Cmd::Stop | Cmd::Vnc | Cmd::Res { .. }) {
+    if !matches!(
+        cli.command,
+        Cmd::Stop | Cmd::Vnc | Cmd::Setup | Cmd::Res { .. }
+    ) {
         if let Some(note) = herdr::ensure_preview_pane(&preview_direction)? {
             eprintln!("bash-screen: {note}");
         }
@@ -270,6 +275,11 @@ fn run() -> Result<()> {
 
     match cli.command {
         Cmd::Config { .. } | Cmd::Preview { .. } => unreachable!(),
+        Cmd::Setup => {
+            if !remote.setup()? {
+                bail!("setup on {host} did not finish; see the messages above");
+            }
+        }
         Cmd::Start => {
             let reply = remote.call(json!({"cmd": "start"}))?;
             let state = if reply["started"] == json!(true) {

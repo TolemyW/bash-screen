@@ -6,7 +6,17 @@ description = "Operate GUI apps on a remote Linux host over SSH, with a live pre
 platforms = ["linux", "macos"]
 
 [[build]]
-command = ["sh", "-c", "cargo build --release && mkdir -p bin && cp target/release/bash-screen bin/bash-screen"]
+command = ["sh", "-c", "cargo build --release && mkdir -p bin && rm -f bin/bash-screen && cp target/release/bash-screen bin/bash-screen"]
+
+# Keeps the `bash-screen` command on PATH: links it into ~/.local/bin.
+[[startup]]
+command = ["sh", "scripts/link-cli.sh"]
+
+[[actions]]
+id = "link-cli"
+title = "bash-screen: put the command on PATH"
+contexts = ["workspace"]
+command = ["sh", "scripts/link-cli.sh"]
 
 # Opened automatically as a split beside the pane that first calls the CLI.
 [[panes]]

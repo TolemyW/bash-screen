@@ -10,6 +10,7 @@ use std::process::{Command, Stdio};
 const REMOTE_FILES: &[(&str, &str)] = &[
     ("bs_remote.py", include_str!("../remote/bs_remote.py")),
     ("session.sh", include_str!("../remote/session.sh")),
+    ("setup.sh", include_str!("../remote/setup.sh")),
 ];
 
 pub struct Remote {
@@ -79,6 +80,18 @@ impl Remote {
         }
         std::fs::write(self.deployed_marker()?, b"")?;
         Ok(())
+    }
+
+    /// Install the remote tools, showing the progress of the installer as it runs.
+    pub fn setup(&self) -> Result<bool> {
+        self.deploy()?;
+        let status = self
+            .ssh()?
+            .arg(format!("bash {}/setup.sh", self.config.remote_dir))
+            .stdin(Stdio::null())
+            .status()
+            .context("cannot run ssh")?;
+        Ok(status.success())
     }
 
     /// Send one request to the helper and return its response object.
