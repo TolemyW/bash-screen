@@ -9,6 +9,11 @@ rm -rf "$dir"
 mkdir -p "$dir"
 cp remote/bs_remote.py remote/session.sh remote/setup.sh "$dir/"
 chmod 700 "$dir"/*
+# Packages downloaded by an earlier run can be reused, to save the downloads.
+if [ -n "${BASH_SCREEN_TEST_PACKAGES:-}" ]; then
+  mkdir -p "$dir/pkg"
+  cp "$BASH_SCREEN_TEST_PACKAGES"/*.deb "$dir/pkg/"
+fi
 
 bash "$dir/setup.sh"
 
@@ -20,7 +25,8 @@ call() { # request JSON -> response JSON; fails unless the response says ok
   printf '%s' "$reply" | python3 -c 'import json,sys; sys.exit(0 if json.load(sys.stdin).get("ok") else 1)'
 }
 
-trap 'printf "%s" "{\"cmd\":\"stop\"}" | python3 "$dir/bs_remote.py" >/dev/null 2>&1 || true; tail -n 30 "$dir"/run/*.log 2>/dev/null || true' EXIT
+# On failure show the session's logs before stopping it removes them.
+trap 'tail -n 30 "$dir"/run/*.log 2>/dev/null || true; printf "%s" "{\"cmd\":\"stop\"}" | python3 "$dir/bs_remote.py" >/dev/null 2>&1 || true' EXIT
 
 echo "== start"
 call '{"cmd":"start","geometry":"1280x800"}'
