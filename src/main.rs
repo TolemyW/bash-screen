@@ -48,6 +48,18 @@ enum Cmd {
         #[arg(long)]
         geometry: Option<String>,
     },
+    /// Connect a host in one step: write the config, install the remote tools,
+    /// start a session and check that it works
+    Init {
+        /// SSH host to connect to
+        host: String,
+        /// Remote directory holding the session tools
+        #[arg(long)]
+        remote_dir: Option<String>,
+        /// Virtual screen size, for example 1280x800
+        #[arg(long)]
+        geometry: Option<String>,
+    },
     /// Install the remote tools on the configured host (no root needed)
     Setup,
     /// Start the remote GUI session (other commands start it on demand)
@@ -192,6 +204,33 @@ fn look(
     Ok(())
 }
 
+/// Update the given settings in the config file, keeping the others.
+fn write_config(
+    host: Option<&String>,
+    remote_dir: Option<&String>,
+    geometry: Option<&String>,
+) -> Result<()> {
+    let mut config = config::load().unwrap_or(config::Config {
+        host: String::new(),
+        remote_dir: "~/.bash-screen".into(),
+        geometry: "1280x800".into(),
+        preview_direction: "auto".into(),
+        preview_blocks: "auto".into(),
+        preview_max_px: 640,
+    });
+    if let Some(host) = host {
+        config.host = host.clone();
+    }
+    if let Some(dir) = remote_dir {
+        config.remote_dir = dir.clone();
+    }
+    if let Some(geometry) = geometry {
+        config.geometry = geometry.clone();
+    }
+    println!("wrote {}", config::save(&config)?.display());
+    Ok(())
+}
+
 fn run() -> Result<()> {
     let cli = Cli::parse();
 
@@ -207,25 +246,16 @@ fn run() -> Result<()> {
             print!("{}", toml::to_string_pretty(&config)?);
             return Ok(());
         }
-        let mut config = config::load().unwrap_or(config::Config {
-            host: String::new(),
-            remote_dir: "~/.bash-screen".into(),
-            geometry: "1280x800".into(),
-            preview_direction: "auto".into(),
-            preview_blocks: "auto".into(),
-            preview_max_px: 640,
-        });
-        if let Some(host) = host {
-            config.host = host.clone();
-        }
-        if let Some(dir) = remote_dir {
-            config.remote_dir = dir.clone();
-        }
-        if let Some(geometry) = geometry {
-            config.geometry = geometry.clone();
-        }
-        println!("wrote {}", config::save(&config)?.display());
+        write_config(host.as_ref(), remote_dir.as_ref(), geometry.as_ref())?;
         return Ok(());
+    }
+    if let Cmd::Init {
+        host,
+        remote_dir,
+        geometry,
+    } = &cli.command
+    {
+        write_config(Some(host), remote_dir.as_ref(), geometry.as_ref())?;
     }
 
     let config = match (config::load(), &cli.command) {
@@ -267,7 +297,7 @@ fn run() -> Result<()> {
     // Any agent-facing command brings up the preview beside the calling pane.
     if !matches!(
         cli.command,
-        Cmd::Stop | Cmd::Vnc | Cmd::Setup | Cmd::Res { .. }
+        Cmd::Stop | Cmd::Vnc | Cmd::Setup | Cmd::Init { .. } | Cmd::Res { .. }
     ) {
         if let Some(note) = herdr::ensure_preview_pane(&preview_direction)? {
             eprintln!("bash-screen: {note}");
@@ -276,6 +306,25 @@ fn run() -> Result<()> {
 
     match cli.command {
         Cmd::Config { .. } | Cmd::Preview { .. } => unreachable!(),
+        Cmd::Init { .. } => {
+            if !remote.setup()? {
+                bail!("setup on {host} did not finish; see the messages above");
+            }
+            let reply = remote.call(json!({"cmd": "start"}))?;
+            println!(
+                "session running on {host} (display {})",
+                reply["display"].as_str().unwrap_or("?")
+            );
+            // Proof that the screen can be read back: a small screenshot.
+            let reply = remote.call(json!({"cmd": "look", "scale": 0.25}))?;
+            let picture = base64::engine::general_purpose::STANDARD
+                .decode(reply["image_webp"].as_str().unwrap_or(""))
+                .context("bad image data")?;
+            image::load_from_memory_with_format(&picture, image::ImageFormat::WebP)
+                .context("the remote screen could not be read")?;
+            println!("screen check passed");
+            println!("ready. Try: bash-screen launch -- firefox https://example.org");
+        }
         Cmd::Setup => {
             if !remote.setup()? {
                 bail!("setup on {host} did not finish; see the messages above");

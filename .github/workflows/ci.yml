@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-24.04, macos-14]
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo fmt --check
+      - run: cargo test --release
+      - run: sh -n scripts/install.sh && sh -n scripts/link-cli.sh && bash -n remote/setup.sh && bash -n remote/session.sh && python3 -m py_compile remote/bs_remote.py
+
+  # The remote side on a machine with no desktop installed: only the packages
+  # the README asks an administrator for, then everything as a plain user.
+  remote-setup:
+    runs-on: ubuntu-24.04
+    container: ubuntu:24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Packages an administrator provides
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            dbus at-spi2-core xauth x11-xkb-utils npm python3 python3-pil ca-certificates
+      - name: Set up and use a session as a plain user
+        run: |
+          useradd -m tester
+          cp -r . /home/tester/src && chown -R tester /home/tester/src
+          su tester -c 'cd /home/tester/src && bash tests/remote-setup.sh'
