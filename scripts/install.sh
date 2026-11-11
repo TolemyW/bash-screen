@@ -24,6 +24,7 @@ case "$(uname -m)" in
 esac
 asset="bash-screen-$os-$arch"
 base="https://github.com/$repo/releases/download/v$version"
+fetch=curl
 
 sha256() {
   if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi
@@ -31,11 +32,11 @@ sha256() {
 
 download() {
   [ "$os" != unknown ] && [ "$arch" != unknown ] || return 1
-  command -v curl --max-filesize 102400 >/dev/null 2>&1 || return 1
+  command -v "$fetch" >/dev/null 2>&1 || return 1
   tmp="$(mktemp -d)"
   trap 'rm -rf "$tmp"' EXIT
-  curl --max-filesize 102400 -fsSL --retry 2 -o "$tmp/$asset" "$base/$asset" || return 1
-  curl --max-filesize 102400 -fsSL --retry 2 -o "$tmp/SHA256SUMS" "$base/SHA256SUMS" || return 1
+  "$fetch" -fsSL --retry 2 -o "$tmp/$asset" "$base/$asset" || return 1
+  "$fetch" -fsSL --retry 2 -o "$tmp/SHA256SUMS" "$base/SHA256SUMS" || return 1
   expected="$(awk -v name="$asset" '$2 == name {print $1}' "$tmp/SHA256SUMS")"
   if [ -z "$expected" ] || [ "$expected" != "$(sha256 "$tmp/$asset")" ]; then
     echo "bash-screen: checksum of $asset does not match; not using it" >&2
