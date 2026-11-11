@@ -336,6 +336,53 @@ def cmd_scroll(env, req):
     return after_action(env, summary)
 
 
+def cmd_input(env, req):
+    """Input from a person using the preview: inject it and return at once.
+
+    Unlike the agent's actions this reads nothing back; the preview fetches
+    the next frame itself. Each action is logged, marked as a person's.
+    """
+    done = []
+    for action in req.get("actions", []):
+        kind = action.get("kind")
+        if kind == "click":
+            x, y = int(action["x"]), int(action["y"])
+            args = ["--headed", "mouse-click", "--xy", f"{x},{y}"]
+            if action.get("button") and action["button"] != "left":
+                args += ["--button", action["button"]]
+            button = action.get("button") or "left"
+            steps, summary = [args], ("click" if button == "left" else button + "-click") + f" at {x},{y}"
+        elif kind == "wheel":
+            x, y, dy = int(action["x"]), int(action["y"]), int(action["dy"])
+            steps = [["--headed", "mouse-wheel", "--x", str(x), "--y", str(y), f"--dy={dy}"]]
+            summary = f"scroll dy={dy}"
+        elif kind == "text":
+            text = action["text"]
+            steps = [["clipboard-set", text], ["press", "ctrl+v"]]
+            shown = text if len(text) <= 40 else text[:37] + "..."
+            summary = "type " + json.dumps(shown, ensure_ascii=False)
+        elif kind == "key":
+            steps, summary = [["press", action["key"]]], "key " + action["key"]
+        else:
+            raise Fail(f"unknown input: {kind}")
+        for args in steps:
+            envelope = ad(env, *args)
+            if not envelope.get("ok"):
+                log_event(f"you: {summary} failed", ok=False)
+                raise Fail(f"{summary}: {ad_error(envelope)}")
+        done.append(summary)
+    # Runs of the same kind read better as one line.
+    merged = []
+    for summary in done:
+        if merged and summary.startswith("key ") and merged[-1].startswith("key ") and len(merged[-1]) < 60:
+            merged[-1] += summary[3:]
+        else:
+            merged.append(summary)
+    for summary in merged:
+        log_event("you: " + summary)
+    return {"done": len(done)}
+
+
 def firefox_profile():
     """A throwaway profile, so the session never touches the user's real Firefox."""
     if not os.path.isdir(FF_PROFILE):
@@ -477,7 +524,7 @@ def handle(req):
         return {"windows": [{"title": w.get("title"), "app": w.get("app_name"), "focused": bool(w.get("is_focused"))}
                             for w in list_windows(env)]}
     table = {"click": cmd_click, "type": cmd_type, "key": cmd_key, "scroll": cmd_scroll,
-             "launch": cmd_launch, "look": cmd_look, "frame": cmd_frame}
+             "launch": cmd_launch, "look": cmd_look, "frame": cmd_frame, "input": cmd_input}
     if cmd not in table:
         raise Fail(f"unknown command: {cmd}")
     return table[cmd](env, req)

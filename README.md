@@ -90,6 +90,24 @@ Change the resolution of the picture at any time:
 
 The steps are 320, 640 and 960 pixels on the longest edge, and the full screen.
 
+### Taking control
+
+Press `i` in the preview pane to operate the remote screen yourself. The
+heading turns red, and from then on clicks, the wheel, typed and pasted text
+and key combinations all go to the remote screen. Press `Ctrl+]` to hand the
+keys back to the preview.
+
+- Each input takes one SSH round trip, so expect a fraction of a second
+  between a click and the picture changing.
+- The picture is sent at 960 pixels or more while you are in control.
+- Text is entered by pasting, which replaces the remote clipboard.
+- Dragging is not supported, and keys that herdr or the terminal keep for
+  themselves never reach the pane.
+- Your actions appear in the action log marked `you:`. Nothing stops you and
+  the agent from acting at the same time.
+
+For anything finer, `bash-screen vnc` prints how to attach a VNC client.
+
 ## Configuration
 
 `bash-screen config` prints the file in use, normally

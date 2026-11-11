@@ -2,6 +2,7 @@
 
 mod config;
 mod herdr;
+mod input;
 mod preview;
 mod remote;
 
