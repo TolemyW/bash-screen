@@ -26,36 +26,42 @@ host with Firefox and a few GTK apps.
 
 ```sh
 herdr plugin install TolemyW/bash-screen
-herdr plugin action invoke bash-screen.link-cli
 ```
 
-The install step builds the binary and needs a Rust toolchain. The second
-command links `bash-screen` into `~/.local/bin`; herdr repeats it at every
-server start, so the link follows plugin updates. It never replaces a file
-that is not its own link.
+This downloads the binary for your system from the GitHub release, checks it
+against the release's checksums, and links `bash-screen` into `~/.local/bin`.
+No toolchain is needed. Where there is no prebuilt binary it builds from
+source instead, which needs Rust; set `BASH_SCREEN_BUILD_FROM_SOURCE=1` to
+force that.
 
-To work on the plugin from a checkout instead:
+The link is refreshed at every herdr start, so it follows plugin updates. It
+never replaces a file that is not its own link.
+
+To work on the plugin from a checkout:
 
 ```sh
-cargo build --release && mkdir -p bin && cp target/release/bash-screen bin/
+BASH_SCREEN_BUILD_FROM_SOURCE=1 sh scripts/install.sh
 herdr plugin link "$PWD"
-herdr plugin action invoke bash-screen.link-cli
 ```
 
 ### Connect a remote host
 
 ```sh
-bash-screen config --host <ssh-host>
-bash-screen setup
+bash-screen init <ssh-host>
 ```
 
-`setup` needs no root. Into the remote directory it unpacks Xvnc and openbox
-from the distribution's packages, and installs agent-desktop from npm. It can
-be run again at any time; finished steps are skipped.
+This writes the config, installs the remote tools, starts a session and reads
+the screen back once as a check. It needs no root and can be run again at any
+time; finished steps are skipped. `--remote-dir` and `--geometry` change the
+defaults. The single steps are also available as `config`, `setup` and
+`start`.
+
+On the remote host it unpacks Xvnc and openbox from the distribution's
+packages and installs agent-desktop from npm, all inside the remote directory.
 
 The remote host must be Ubuntu 24.04 or later and already have `dbus`,
 `at-spi2-core`, `xauth`, `x11-xkb-utils`, `npm`, and Python 3 with Pillow.
-`setup` checks for these and prints the `apt-get install` command an
+`init` checks for these and prints the `apt-get install` command an
 administrator should run if any are missing.
 
 ## Use
@@ -146,7 +152,9 @@ Environment variables:
 | `src/` | The local CLI and preview (Rust) |
 | `remote/` | Files copied to the remote host: installer, session launcher and helper |
 | `herdr-plugin.toml` | herdr plugin manifest |
-| `scripts/` | Helper run by the plugin to put the command on `PATH` |
+| `scripts/` | Install step of the plugin, and the helper that puts the command on `PATH` |
+| `.github/workflows/` | Tests on every push; binaries published for every version tag |
+| `tests/remote-setup.sh` | End-to-end check of the remote side on a bare machine |
 | `tests/fixture/` | Test page and request-logging server used as a test oracle |
 
 ## License
