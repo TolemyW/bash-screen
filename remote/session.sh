@@ -52,11 +52,16 @@ start() {
   # Let the server pick a free display number and report it back.
   local fdfile="$RUN/displayfd"
   : > "$fdfile"
+  # A host without a desktop has no keyboard maps; setup.sh unpacks them here.
+  local xkb=()
+  if [ ! -d /usr/share/X11/xkb ] && [ -d "$BASE/root/usr/share/X11/xkb" ]; then
+    xkb=(-xkbdir "$BASE/root/usr/share/X11/xkb")
+  fi
   LD_LIBRARY_PATH="$LIBDIR" setsid nohup "$XVNC" -displayfd 3 \
       -geometry "$geometry" -depth 24 \
       -rfbunixpath "$RUN/vnc.sock" -rfbunixmode 0600 -rfbport -1 \
       -SecurityTypes None -AcceptSetDesktopSize=0 \
-      -auth "$XAUTHORITY" -nolisten tcp \
+      -auth "$XAUTHORITY" -nolisten tcp ${xkb[@]+"${xkb[@]}"} \
       3>"$fdfile" >"$RUN/xvnc.log" 2>&1 &
   echo $! > "$RUN/xvnc.pid"
 

@@ -93,7 +93,7 @@ done
 # programs can load everything they need. Whether they run is what counts,
 # not whether every package in the dependency tree could be fetched.
 level="$PROGRAMS"
-for _ in 1 2 3; do
+for _ in 1 2 3 4 5 6 7 8; do
   [ -z "$(unresolved_libraries)" ] && break
   next="$(missing_libraries $level)"
   [ -z "$next" ] && break
@@ -102,6 +102,12 @@ for _ in 1 2 3; do
   done
   level="$next"
 done
+
+# The X server cannot start without keyboard maps; a host with no desktop
+# installed has none.
+if [ ! -d /usr/share/X11/xkb ]; then
+  unpack xkb-data || problems+=("keyboard maps (package xkb-data) could not be fetched")
+fi
 
 unresolved="$(unresolved_libraries)"
 if [ -n "$unresolved" ]; then
