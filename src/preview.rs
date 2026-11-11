@@ -5,6 +5,7 @@
 //! protocol (herdr renders it natively), and block characters otherwise.
 
 use crate::config;
+use crate::input::{self, Input};
 use crate::remote::Remote;
 use anyhow::{bail, Result};
 use base64::Engine;
@@ -287,6 +288,10 @@ fn clip(text: &str, width: usize) -> String {
 /// layout lists under the picture.
 const SIDE_MIN: usize = 26;
 const STACKED_EVENTS: usize = 2;
+/// Wheel lines scrolled on the remote screen per wheel report.
+const WHEEL_LINES: i64 = 2;
+/// Longest edge of the picture while a person is controlling the screen.
+const CONTROL_MIN_PX: u32 = 960;
 
 /// Where the picture and the text go. The pane is rarely the same shape as the
 /// remote screen, so whichever direction has spare room holds the text:
@@ -326,6 +331,42 @@ fn choose_layout(geo: &Geometry, aspect: f64) -> Layout {
     }
 }
 
+/// Row and column (1-based) of the picture's top-left cell: at the left edge
+/// in the side layout, centred under the status line otherwise.
+fn picture_origin(shown: &Shown, geo: &Geometry, layout: Layout) -> (usize, usize) {
+    if layout.side {
+        (1, 1)
+    } else {
+        (2, 1 + geo.cols.saturating_sub(shown.cells_w) / 2)
+    }
+}
+
+/// Remote screen position under a mouse report, or None outside the picture.
+/// `x` and `y` are 1-based, in pixels when `pixels` is set and in cells otherwise.
+fn to_screen(
+    (x, y): (usize, usize),
+    pixels: bool,
+    shown: &Shown,
+    geo: &Geometry,
+    layout: Layout,
+    screen: (f64, f64),
+) -> Option<(i64, i64)> {
+    let (cell_w, cell_h) = (geo.cell_w as f64, geo.cell_h as f64);
+    // A cell report means "somewhere in this cell": take its centre.
+    let (px, py) = if pixels {
+        (x as f64 - 1.0, y as f64 - 1.0)
+    } else {
+        ((x as f64 - 0.5) * cell_w, (y as f64 - 0.5) * cell_h)
+    };
+    let (top, left) = picture_origin(shown, geo, layout);
+    let across = (px - (left - 1) as f64 * cell_w) / (shown.cells_w as f64 * cell_w);
+    let down = (py - (top - 1) as f64 * cell_h) / (shown.cells_h as f64 * cell_h);
+    if shown.cells_w == 0 || !(0.0..1.0).contains(&across) || !(0.0..1.0).contains(&down) {
+        return None;
+    }
+    Some(((across * screen.0) as i64, (down * screen.1) as i64))
+}
+
 /// Compose the whole screen. Every line is placed with an absolute cursor move
 /// and nothing ends with a newline, so the pane never scrolls.
 fn compose(
@@ -334,15 +375,13 @@ fn compose(
     geo: &Geometry,
     layout: Layout,
     picture_changed: bool,
+    control: bool,
 ) -> String {
+    // The heading turns red while the pane is controlling the remote screen.
+    let heading = if control { "\x1b[1;97;41m" } else { "\x1b[7m" };
     // Synchronised update: the terminal shows the frame only when it is complete.
     let mut out = String::from("\x1b[?2026h");
-    // The picture sits at the left edge in the side layout, centred otherwise.
-    let (top, left) = if layout.side {
-        (1, 1)
-    } else {
-        (2, 1 + geo.cols.saturating_sub(shown.cells_w) / 2)
-    };
+    let (top, left) = picture_origin(shown, geo, layout);
     match mode {
         Mode::Blocks(_) => {
             for (i, row) in shown.block_rows.iter().enumerate() {
@@ -372,7 +411,7 @@ fn compose(
             let _ = write!(out, "\x1b[{row};{column}H");
             match lines.get(row - 1) {
                 Some((true, text)) => {
-                    let _ = write!(out, "\x1b[7m{:<w$}\x1b[0m", clip(text, width), w = width);
+                    let _ = write!(out, "{heading}{:<w$}\x1b[0m", clip(text, width), w = width);
                 }
                 Some((false, text)) => {
                     let _ = write!(out, "\x1b[2m{}\x1b[0m\x1b[K", clip(text, width));
@@ -387,7 +426,7 @@ fn compose(
         );
         let _ = write!(
             out,
-            "\x1b[1;1H\x1b[7m{:<w$}\x1b[0m",
+            "\x1b[1;1H{heading}{:<w$}\x1b[0m",
             clip(&status, geo.cols),
             w = geo.cols
         );
@@ -421,60 +460,12 @@ fn clear_all(stdout: &mut std::io::Stdout, mode: Mode) -> Result<()> {
     Ok(())
 }
 
-/// Wait up to `timeout` for a key press in the preview pane.
-fn wait_key(timeout: Duration) -> Option<u8> {
-    let mut poll = libc::pollfd {
-        fd: libc::STDIN_FILENO,
-        events: libc::POLLIN,
-        revents: 0,
-    };
-    if unsafe { libc::poll(&mut poll, 1, timeout.as_millis() as i32) } <= 0 {
-        return None;
-    }
-    let mut byte = [0u8; 1];
-    match std::io::stdin().read(&mut byte) {
-        // An escape sequence (focus report, arrow key, encoded key press) is
-        // not a command: swallow all of it, since its digits would look like keys.
-        Ok(1) if byte[0] == 0x1b => {
-            let mut rest = [0u8; 64];
-            loop {
-                let mut more = libc::pollfd {
-                    fd: libc::STDIN_FILENO,
-                    events: libc::POLLIN,
-                    revents: 0,
-                };
-                if unsafe { libc::poll(&mut more, 1, 20) } <= 0 {
-                    break;
-                }
-                if !matches!(std::io::stdin().read(&mut rest), Ok(n) if n > 0) {
-                    break;
-                }
-            }
-            None
-        }
-        Ok(1) => Some(byte[0]),
-        // End of input (no terminal): fall back to plain waiting.
-        _ => {
-            std::thread::sleep(timeout);
-            None
-        }
-    }
-}
-
-/// Deliver key presses one at a time and without echo; Ctrl-C keeps working.
-fn read_keys_directly() {
-    unsafe {
-        let mut mode: libc::termios = std::mem::zeroed();
-        if libc::tcgetattr(libc::STDIN_FILENO, &mut mode) == 0 {
-            mode.c_lflag &= !(libc::ICANON | libc::ECHO);
-            libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &mode);
-        }
-    }
-}
-
 /// `default_max_px` comes from the config. A `pinned` value fixes the
 /// resolution; otherwise the pane follows the shared run-time setting, which
 /// the + and - keys (and `bash-screen res`) change.
+///
+/// Pressing `i` starts controlling the remote screen: from then on clicks,
+/// the wheel and every key go to it, until Ctrl+] is pressed.
 pub fn run(
     remote: &Remote,
     host: &str,
@@ -483,7 +474,7 @@ pub fn run(
     default_max_px: u32,
     pinned: Option<u32>,
 ) -> Result<()> {
-    read_keys_directly();
+    input::set_terminal(false);
     let mut stdout = std::io::stdout();
     write!(stdout, "\x1b[?25l")?;
     clear_all(&mut stdout, mode)?;
@@ -492,9 +483,25 @@ pub fn run(
     let mut last_layout = Layout::default();
     // Width / height of the remote screen; refined by the first reply.
     let mut aspect = 1.6;
+    let mut screen = (0.0, 0.0);
+    let mut control = false;
+    // Whether the terminal reports the mouse in pixels rather than cells.
+    let mut pixel_mouse = false;
+    // Refreshes still to be done quickly, to follow the effect of an input.
+    let mut quick_refreshes = 0;
+    let mut notice = String::new();
     loop {
-        let max_px =
+        let mut max_px =
             pinned.unwrap_or_else(|| config::read_res_override().unwrap_or(default_max_px));
+        if control && pinned.is_none() && (1..CONTROL_MIN_PX).contains(&max_px) {
+            // Small targets are hard to hit in a coarse picture.
+            max_px = CONTROL_MIN_PX;
+        }
+        let heading = match (control, notice.is_empty()) {
+            (false, _) => format!("bash-screen  {host}"),
+            (true, true) => format!("CONTROLLING {host}  Ctrl+] to leave"),
+            (true, false) => format!("CONTROLLING {host}  ! {notice}"),
+        };
         let geo = geometry();
         let layout = choose_layout(&geo, aspect);
         let mut redraw = (geo.cols, geo.rows) != last_size || layout != last_layout;
@@ -528,7 +535,7 @@ pub fn run(
             shown.events.clone(),
         );
         let mut picture_changed = false;
-        shown.host_line = format!("bash-screen  {host}");
+        shown.host_line = heading.clone();
         let started = std::time::Instant::now();
         let mut transcode_ms = 0;
         let reply = remote.call(request);
@@ -538,7 +545,7 @@ pub fn run(
                 if !shown.hash.is_empty() || !shown.block_rows.is_empty() || !shown.image.is_empty()
                 {
                     shown = Shown::default();
-                    shown.host_line = format!("bash-screen  {host}");
+                    shown.host_line = heading.clone();
                     clear_all(&mut stdout, mode)?;
                     redraw = true;
                 }
@@ -558,6 +565,7 @@ pub fn run(
                 {
                     if sh > 0.0 {
                         aspect = sw / sh;
+                        screen = (sw, sh);
                     }
                 }
                 let (old_w, old_h) = (shown.cells_w, shown.cells_h);
@@ -566,7 +574,7 @@ pub fn run(
                         .to_rgb8()
                         .into_raw();
                     shown.sent = format!(
-                        "{}x{} sub-pixels, {:.1} KB/frame",
+                        "{}x{} sub-pixels, {:.1} KB/frame   [i] control",
                         w,
                         h,
                         png.len() as f64 / 1024.0
@@ -584,7 +592,7 @@ pub fn run(
                     let image =
                         image::load_from_memory_with_format(&webp, image::ImageFormat::WebP)?;
                     shown.sent = format!(
-                        "{}x{} px, {:.1} KB/frame   [+/-] resolution",
+                        "{}x{} px, {:.1} KB/frame   [+/-] resolution  [i] control",
                         w,
                         h,
                         webp.len() as f64 / 1024.0
@@ -643,7 +651,9 @@ pub fn run(
         );
         if redraw || picture_changed || before != after {
             let repaint_picture = picture_changed || redraw;
-            stdout.write_all(compose(&shown, mode, &geo, layout, repaint_picture).as_bytes())?;
+            stdout.write_all(
+                compose(&shown, mode, &geo, layout, repaint_picture, control).as_bytes(),
+            )?;
             stdout.flush()?;
             if std::env::var_os("BASH_SCREEN_DEBUG").is_some() {
                 // Timing of one redraw, for diagnosing a slow preview.
@@ -663,15 +673,88 @@ pub fn run(
                 }
             }
         }
-        if let Some(key) = wait_key(interval) {
-            let chosen = match key {
-                b'+' | b'=' => Some(config::step_res(max_px, true)),
-                b'-' | b'_' => Some(config::step_res(max_px, false)),
-                b'1'..=b'4' => Some(config::RES_LEVELS[(key - b'1') as usize]),
-                _ => None,
-            };
-            if let (Some(chosen), None, Mode::Image) = (chosen, pinned, mode) {
-                config::write_res_override(chosen)?;
+        let wait = if quick_refreshes > 0 {
+            quick_refreshes -= 1;
+            Duration::from_millis(120)
+        } else {
+            interval
+        };
+        let mut pending = input::read(wait);
+        while let Some(bytes) = pending.take() {
+            let mut actions: Vec<serde_json::Value> = Vec::new();
+            for item in input::parse(&bytes) {
+                if !control {
+                    // Not controlling: keys are commands for the preview itself.
+                    let Input::Text(text) = item else { continue };
+                    for key in text.chars() {
+                        let chosen = match key {
+                            '+' | '=' => Some(config::step_res(max_px, true)),
+                            '-' | '_' => Some(config::step_res(max_px, false)),
+                            '1'..='4' => Some(config::RES_LEVELS[key as usize - '1' as usize]),
+                            _ => None,
+                        };
+                        if let (Some(chosen), None, Mode::Image) = (chosen, pinned, mode) {
+                            config::write_res_override(chosen)?;
+                        }
+                        if key == 'i' {
+                            control = true;
+                            pixel_mouse = false;
+                            notice.clear();
+                            input::set_terminal(true);
+                            stdout.write_all(input::ENTER_CONTROL.as_bytes())?;
+                            stdout.flush()?;
+                            break;
+                        }
+                    }
+                    continue;
+                }
+                match item {
+                    Input::Leave => {
+                        control = false;
+                        stdout.write_all(input::LEAVE_CONTROL.as_bytes())?;
+                        stdout.flush()?;
+                        input::set_terminal(false);
+                    }
+                    Input::PixelMouse(reported) => pixel_mouse = reported,
+                    Input::Press { button, x, y } => {
+                        // A position beyond the pane's cells can only be pixels.
+                        pixel_mouse |= x > geo.cols || y > geo.rows;
+                        if let Some((sx, sy)) =
+                            to_screen((x, y), pixel_mouse, &shown, &geo, layout, screen)
+                        {
+                            actions
+                                .push(json!({"kind": "click", "x": sx, "y": sy, "button": button}));
+                        }
+                    }
+                    Input::Wheel { up, x, y } => {
+                        pixel_mouse |= x > geo.cols || y > geo.rows;
+                        let Some((sx, sy)) =
+                            to_screen((x, y), pixel_mouse, &shown, &geo, layout, screen)
+                        else {
+                            continue;
+                        };
+                        let lines = if up { WHEEL_LINES } else { -WHEEL_LINES };
+                        // A spin of the wheel arrives as many reports: add them up.
+                        match actions.last_mut() {
+                            Some(last) if last["kind"] == "wheel" => {
+                                last["dy"] = json!(last["dy"].as_i64().unwrap_or(0) + lines);
+                            }
+                            _ => actions
+                                .push(json!({"kind": "wheel", "x": sx, "y": sy, "dy": lines})),
+                        }
+                    }
+                    Input::Text(text) => actions.push(json!({"kind": "text", "text": text})),
+                    Input::Key(key) => actions.push(json!({"kind": "key", "key": key})),
+                }
+            }
+            if !actions.is_empty() {
+                match remote.call(json!({"cmd": "input", "actions": actions})) {
+                    Ok(_) => notice.clear(),
+                    Err(error) => notice = error.to_string(),
+                }
+                quick_refreshes = 4;
+                // Input that arrived meanwhile goes out before the next frame.
+                pending = input::read(Duration::ZERO);
             }
         }
     }
