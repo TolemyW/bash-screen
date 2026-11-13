@@ -2,7 +2,7 @@
 # bash-screen: install the remote tools into this directory, without root.
 #
 #   root/   Xvnc and openbox, unpacked from the distribution's packages
-#   ad/     agent-desktop, from npm
+#   ad/     agent-desktop, from its npm package (npm itself is not needed)
 #
 # Safe to run again: finished steps are skipped. Things that only an
 # administrator can install are reported, with the command to run.
@@ -10,6 +10,8 @@ set -u
 
 BASE="$(cd "$(dirname "$0")" && pwd)"
 AD_VERSION="1.2.0"
+AD_URL="https://registry.npmjs.org/agent-desktop/-/agent-desktop-$AD_VERSION.tgz"
+AD_SHA256="9e4b1a69d9d6be487873a1df8db61234a8b7a9c79aeced4e403a8126c0e0bcc0"
 # The programs we need. Their library dependencies are worked out below.
 PROGRAMS="tigervnc-standalone-server openbox"
 
@@ -26,7 +28,6 @@ check() { # command, package
 check apt-get apt
 check dpkg dpkg
 check python3 python3
-check npm npm
 check dbus-daemon dbus
 check xauth xauth
 check mcookie util-linux
@@ -107,6 +108,17 @@ done
 # installed has none.
 if [ ! -d /usr/share/X11/xkb ]; then
   unpack xkb-data || problems+=("keyboard maps (package xkb-data) could not be fetched")
+  # Older keymap compilers (Ubuntu 22.04) only read maps from the system
+  # directory, so an unpacked copy does not help them. Try it.
+  if command -v xkbcomp >/dev/null 2>&1; then
+    probe="$(mktemp -d)"
+    keymap='xkb_keymap { xkb_keycodes { include "evdev+aliases(qwerty)" }; xkb_types { include "complete" }; xkb_compat { include "complete" }; xkb_symbols { include "pc+us" }; };'
+    if ! printf '%s' "$keymap" | xkbcomp -w 0 "-R$BASE/root/usr/share/X11/xkb" -xkm - "$probe/probe.xkm" >/dev/null 2>&1; then
+      say "  MISSING  keyboard maps (this system cannot use an unpacked copy)"
+      needs_admin+=(xkb-data)
+    fi
+    rm -rf "$probe"
+  fi
 fi
 
 unresolved="$(unresolved_libraries)"
@@ -123,16 +135,53 @@ AD="$BASE/ad/node_modules/.bin/agent-desktop"
 have="$("$AD" version 2>/dev/null | sed -n 's/.*"version":"\([0-9.]*\)"}}.*/\1/p')"
 if [ "$have" = "$AD_VERSION" ]; then
   say "  ok       agent-desktop $have"
-elif command -v npm >/dev/null 2>&1; then
+else
+  # The package carries a ready-made program for each system; take ours out
+  # of it. This is all `npm install` would do, without needing Node.
   mkdir -p "$BASE/ad"
-  if (cd "$BASE/ad" && npm install --no-audit --no-fund "agent-desktop@$AD_VERSION" >/dev/null 2>&1) && "$AD" version >/dev/null 2>&1; then
+  if AD_URL="$AD_URL" AD_SHA256="$AD_SHA256" python3 - "$BASE/ad" <<'PYTHON' && "$AD" version >/dev/null 2>&1
+import hashlib, io, os, platform, sys, tarfile, urllib.request
+
+dest = os.path.join(sys.argv[1], "node_modules", "agent-desktop", "bin")
+arch = {"x86_64": "x64", "aarch64": "arm64"}.get(platform.machine())
+if arch is None:
+    sys.exit(f"no agent-desktop program for {platform.machine()}")
+data = b""
+for attempt in range(3):  # a slow link can drop a 15 MB download part-way
+    try:
+        data = urllib.request.urlopen(os.environ["AD_URL"], timeout=300).read()
+    except Exception as error:
+        print(f"  download failed ({error.__class__.__name__}), attempt {attempt + 1} of 3")
+        continue
+    if hashlib.sha256(data).hexdigest() == os.environ["AD_SHA256"]:
+        break
+else:
+    sys.exit("the agent-desktop package could not be downloaded intact")
+package = tarfile.open(fileobj=io.BytesIO(data))
+os.makedirs(dest, exist_ok=True)
+wanted = {
+    f"package/bin/agent-desktop-linux-{arch}": "agent-desktop",
+    f"package/bin/agent-desktop-linux-clipboard-owner-linux-{arch}": "agent-desktop-linux-clipboard-owner",
+}
+for member, name in wanted.items():
+    path = os.path.join(dest, name)
+    with open(path + ".new", "wb") as out:
+        out.write(package.extractfile(member).read())
+    os.chmod(path + ".new", 0o755)
+    os.replace(path + ".new", path)
+links = os.path.join(sys.argv[1], "node_modules", ".bin")
+os.makedirs(links, exist_ok=True)
+link = os.path.join(links, "agent-desktop")
+if os.path.lexists(link):
+    os.remove(link)
+os.symlink("../agent-desktop/bin/agent-desktop", link)
+PYTHON
+  then
     say "  installed agent-desktop $AD_VERSION"
   else
     say "  FAILED   agent-desktop"
-    problems+=("npm could not install agent-desktop@$AD_VERSION")
+    problems+=("agent-desktop $AD_VERSION could not be installed; it needs glibc 2.35 or newer (this host has $(ldd --version 2>/dev/null | sed -n '1s/.* //p')) and access to registry.npmjs.org")
   fi
-else
-  problems+=("npm is needed to install agent-desktop")
 fi
 
 # --- summary -------------------------------------------------------------------

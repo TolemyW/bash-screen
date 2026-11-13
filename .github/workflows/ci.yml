@@ -18,22 +18,42 @@ jobs:
       - uses: actions/checkout@v4
       - run: cargo fmt --check
       - run: cargo test --release
-      - run: sh -n scripts/install.sh && sh -n scripts/link-cli.sh && bash -n remote/setup.sh && bash -n remote/session.sh && python3 -m py_compile remote/bs_remote.py
+      - run: sh -n scripts/install.sh && sh -n scripts/link-cli.sh && bash -n remote/setup.sh && bash -n remote/session.sh && bash -n tests/local-e2e.sh && bash -n tests/remote-setup.sh && python3 -m py_compile remote/bs_remote.py
 
   # The remote side on a machine with no desktop installed: only the packages
   # the README asks an administrator for, then everything as a plain user.
   remote-setup:
     runs-on: ubuntu-24.04
-    container: ubuntu:24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ["ubuntu:24.04", "ubuntu:26.04", "debian:12", "debian:13"]
+        extra: [""]
+        include:
+          # Its keymap compiler cannot use the copy that setup unpacks.
+          - image: "ubuntu:22.04"
+            extra: xkb-data
+    container: ${{ matrix.image }}
     steps:
       - uses: actions/checkout@v4
       - name: Packages an administrator provides
         run: |
           apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            dbus at-spi2-core xauth x11-xkb-utils npm python3 python3-pil ca-certificates
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends             dbus at-spi2-core xauth x11-xkb-utils python3 python3-pil ca-certificates ${{ matrix.extra }}
       - name: Set up and use a session as a plain user
         run: |
           useradd -m tester
           cp -r . /home/tester/src && chown -R tester /home/tester/src
           su tester -c 'cd /home/tester/src && bash tests/remote-setup.sh'
+
+  # The whole CLI, with this machine as the host: install, two sessions, stop.
+  local-host:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo build --release
+      - name: Packages an administrator provides
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends             dbus at-spi2-core xauth x11-xkb-utils python3 python3-pil
+      - run: bash tests/local-e2e.sh target/release/bash-screen

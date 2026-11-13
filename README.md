@@ -1,10 +1,13 @@
 # bash-screen
 
 Let an agent operate GUI apps on a remote Linux host over SSH, with a live
-preview in a [herdr](https://github.com/herdrdev/herdr) pane.
+preview in the terminal. It is a plain command-line tool, and also a
+[herdr](https://github.com/herdrdev/herdr) plugin that opens the preview by
+itself.
 
-Status: an early working slice. It has been exercised against one Ubuntu 24.04
-host with Firefox and a few GTK apps.
+Status: an early working slice. The remote side is tested on Ubuntu 22.04,
+24.04 and 26.04 and Debian 12 and 13. Apps exercised so far: Firefox, a few
+GTK apps, and one Electron app (see Known limits).
 
 ## How it works
 
@@ -17,8 +20,9 @@ host with Firefox and a few GTK apps.
   [agent-desktop](https://github.com/vercel-labs/agent-desktop) (the
   accessibility tree) and falls back to screenshots and coordinates for
   anything the tree does not cover.
-- Inside herdr, the first call opens a preview pane next to the calling pane.
-  It shows the remote screen and the latest actions.
+- `bash-screen preview` shows the screen and the latest actions in any
+  terminal. Inside herdr, the first call opens it in a pane next to the
+  calling pane.
 
 ## Setup
 
@@ -36,6 +40,10 @@ force that.
 
 The link is refreshed at every herdr start, so it follows plugin updates. It
 never replaces a file that is not its own link.
+
+Without herdr, download the binary for your system from the
+[releases](https://github.com/TolemyW/bash-screen/releases) and put it on your
+`PATH` as `bash-screen`.
 
 To work on the plugin from a checkout:
 
@@ -57,12 +65,37 @@ defaults. The single steps are also available as `config`, `setup` and
 `start`.
 
 On the remote host it unpacks Xvnc and openbox from the distribution's
-packages and installs agent-desktop from npm, all inside the remote directory.
+packages and downloads agent-desktop, all inside the remote directory.
 
-The remote host must be Ubuntu 24.04 or later and already have `dbus`,
-`at-spi2-core`, `xauth`, `x11-xkb-utils`, `npm`, and Python 3 with Pillow.
-`init` checks for these and prints the `apt-get install` command an
-administrator should run if any are missing.
+The remote host must be Ubuntu 22.04 or later, or Debian 12 or later
+(agent-desktop needs glibc 2.35), and already have `dbus`, `at-spi2-core`,
+`xauth`, `x11-xkb-utils`, and Python 3 with Pillow (on Ubuntu 22.04 also
+`xkb-data`, which any host with a desktop has). `init` checks for these
+and prints the `apt-get install` command an administrator should run if any
+are missing.
+
+### Hosts and sessions
+
+Commands act on the default host and its session `main`. The first host you
+`init` becomes the default.
+
+```sh
+bash-screen init other-host                 # a second host; the default stays
+bash-screen --host other-host observe
+bash-screen --session research launch -- firefox   # a second screen on the default host
+bash-screen sessions                        # what is running on the host
+bash-screen --session research stop
+```
+
+- A session is a separate screen with its own apps, session bus, Firefox
+  profile and action log. Sessions on one host share only the installed
+  tools, so several agents can work on one host without seeing each other.
+- `BASH_SCREEN_HOST` and `BASH_SCREEN_SESSION` select the same things for a
+  whole shell, which is the easy way to give each agent its own session.
+- The host `local` is this machine, reached without SSH: for an agent that
+  runs on the same Linux machine as the apps.
+- Stopping a session keeps its browser profile; starting it again continues
+  from there. `stop --forget` deletes the profile as well.
 
 ## Use
 
@@ -73,6 +106,7 @@ bash-screen click e12          # a ref, or a screen position such as 640,400
 bash-screen type --ref e7 hello
 bash-screen key ctrl+l
 bash-screen scroll --ref e40
+bash-screen drag 200,300 600,300
 bash-screen look               # screenshot saved locally as PNG
 bash-screen vnc                # how a person can take over with a VNC client
 bash-screen stop
@@ -81,7 +115,18 @@ bash-screen stop
 Every action prints a fresh observation. Refs are valid only for the latest
 observation. Coordinates are screen pixels.
 
+Add `--json` to any command to get its reply as one line of JSON instead of
+text. For `look` the JSON names the saved file.
+
+If an app misbehaves when its elements are read, start it with
+`bash-screen launch --no-a11y -- <app>`. `observe` then does not see it; work
+from `look` and positions instead.
+
 ## Preview
+
+Inside herdr the preview pane opens by itself and follows the session its
+calling pane last used. Anywhere else, run `bash-screen preview` in a terminal
+of your own; `--host` and `--session` choose what it shows.
 
 The preview draws a real image when the terminal supports the Kitty graphics
 protocol, and block characters otherwise. Its text goes wherever the pane has
@@ -107,8 +152,8 @@ keys back to the preview.
   between a click and the picture changing.
 - The picture is sent at 960 pixels or more while you are in control.
 - Text is entered by pasting, which replaces the remote clipboard.
-- Dragging is not supported, and keys that herdr or the terminal keep for
-  themselves never reach the pane.
+- Dragging with the mouse is not supported, and keys that herdr or the
+  terminal keep for themselves never reach the pane.
 - Your actions appear in the action log marked `you:`. Nothing stops you and
   the agent from acting at the same time.
 
@@ -121,24 +166,37 @@ For anything finer, `bash-screen vnc` prints how to attach a VNC client.
 
 | Key | Default | Meaning |
 |---|---|---|
-| `host` | | SSH host, as you would pass it to `ssh` |
-| `remote_dir` | `~/.bash-screen` | Directory on the remote host holding the tools |
+| `host` | | The default host: an SSH host as you would pass it to `ssh`, or `local` |
+| `remote_dir` | `~/.bash-screen` | Directory on the default host holding the tools |
 | `geometry` | `1280x800` | Size of the virtual screen, fixed per session |
 | `preview_direction` | `auto` | Where the preview pane opens: `auto` (right of a wide pane, above a narrow one), `right`, `down` or `up` |
 | `preview_blocks` | `auto` | How the preview draws: `auto`, `image`, `sextant`, `quad` or `half` |
 | `preview_max_px` | `640` | Longest edge of the picture sent to the preview; `0` sends the full screen |
+
+Another host can have its own `remote_dir` and `geometry`:
+
+```toml
+[hosts.other-host]
+remote_dir = "~/tools/bash-screen"
+```
 
 Environment variables:
 
 | Variable | Effect |
 |---|---|
 | `BASH_SCREEN_CONFIG` | Use this config file |
+| `BASH_SCREEN_HOST` | Host to act on, as `--host` |
+| `BASH_SCREEN_SESSION` | Session to act on, as `--session` |
 | `BASH_SCREEN_NO_PREVIEW` | Do not open the preview pane |
 | `BASH_SCREEN_DEBUG` | Make the preview log the timing of each redraw to `~/.local/state/bash-screen/preview-timing.log` |
 
 ## Known limits
 
-- One session per remote host.
+- Electron and Chromium apps: with Clash Party (Electron 43) the app crashed
+  on the first key press after its elements had been read. Started with
+  `--no-a11y` it took keys without trouble. Chrome itself has not been tried.
+- When a dialog covers a page, `observe` still lists the covered elements,
+  ahead of the dialog's own.
 - No request de-duplication or resume after a dropped connection.
 - The session shares the remote user's home directory; only the display and
   the session bus are isolated.
@@ -155,6 +213,7 @@ Environment variables:
 | `scripts/` | Install step of the plugin, and the helper that puts the command on `PATH` |
 | `.github/workflows/` | Tests on every push; binaries published for every version tag |
 | `tests/remote-setup.sh` | End-to-end check of the remote side on a bare machine |
+| `tests/local-e2e.sh` | End-to-end check of the CLI with this machine as the host |
 | `tests/fixture/` | Test page and request-logging server used as a test oracle |
 
 ## License

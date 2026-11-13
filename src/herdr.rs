@@ -1,8 +1,9 @@
 //! herdr integration: open the preview as a split next to the calling pane.
 
-use crate::config::{self, PLUGIN_ID};
+use crate::config::{self, Target, PLUGIN_ID};
 use anyhow::Result;
 use serde_json::Value;
+use std::path::PathBuf;
 use std::process::Command;
 
 /// Find the first "pane_id" anywhere in herdr's JSON reply.
@@ -81,11 +82,37 @@ fn auto_direction(herdr: &str, pane: &str) -> &'static str {
     }
 }
 
+/// File that tells the preview in `preview_pane` which session to show.
+fn preview_target_file(preview_pane: &str) -> Result<PathBuf> {
+    Ok(config::state_dir()?.join(format!(
+        "preview-target-{}",
+        preview_pane.replace([':', '/'], "_")
+    )))
+}
+
+fn set_preview_target(preview_pane: &str, target: &Target) -> Result<()> {
+    let path = preview_target_file(preview_pane)?;
+    let wanted = format!("{}\n{}\n", target.host, target.session);
+    if std::fs::read_to_string(&path).ok().as_deref() != Some(wanted.as_str()) {
+        std::fs::write(&path, wanted)?;
+    }
+    Ok(())
+}
+
+/// For a preview running in a herdr pane: the host and session it was opened
+/// for, or was last pointed at. None outside herdr.
+pub fn own_preview_target() -> Option<(String, String)> {
+    let pane = std::env::var("HERDR_PANE_ID").ok()?;
+    let text = std::fs::read_to_string(preview_target_file(&pane).ok()?).ok()?;
+    let mut lines = text.lines();
+    Some((lines.next()?.to_string(), lines.next()?.to_string()))
+}
+
 /// When running inside a herdr pane, make sure a preview pane sits beside it.
 /// `direction` is "auto", "right", "down" or "up". Returns a note for the user
 /// when a pane was opened or could not be opened. Does nothing outside herdr,
 /// or when BASH_SCREEN_NO_PREVIEW is set.
-pub fn ensure_preview_pane(direction: &str) -> Result<Option<String>> {
+pub fn ensure_preview_pane(direction: &str, target: &Target) -> Result<Option<String>> {
     if std::env::var_os("BASH_SCREEN_NO_PREVIEW").is_some() {
         return Ok(None);
     }
@@ -99,6 +126,8 @@ pub fn ensure_preview_pane(direction: &str) -> Result<Option<String>> {
     let binding = config::state_dir()?.join(format!("preview-{}", pane.replace([':', '/'], "_")));
     if let Ok(existing) = std::fs::read_to_string(&binding) {
         if pane_exists(&herdr, existing.trim()) {
+            // The pane shows whichever session its calling pane used last.
+            set_preview_target(existing.trim(), target)?;
             return Ok(None);
         }
     }
@@ -141,6 +170,7 @@ pub fn ensure_preview_pane(direction: &str) -> Result<Option<String>> {
         .and_then(|v| find_pane_id(&v));
     match opened {
         Some(id) if out.status.success() => {
+            set_preview_target(&id, target)?;
             std::fs::write(&binding, &id)?;
             if direction == "up" {
                 let _ = Command::new(&herdr)

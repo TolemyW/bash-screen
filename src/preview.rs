@@ -473,6 +473,7 @@ pub fn run(
     mode: Mode,
     default_max_px: u32,
     pinned: Option<u32>,
+    retargeted: &dyn Fn() -> bool,
 ) -> Result<()> {
     input::set_terminal(false);
     let mut stdout = std::io::stdout();
@@ -491,6 +492,10 @@ pub fn run(
     let mut quick_refreshes = 0;
     let mut notice = String::new();
     loop {
+        if !control && retargeted() {
+            // The caller starts again with the new session.
+            return Ok(());
+        }
         let mut max_px =
             pinned.unwrap_or_else(|| config::read_res_override().unwrap_or(default_max_px));
         if control && pinned.is_none() && (1..CONTROL_MIN_PX).contains(&max_px) {
