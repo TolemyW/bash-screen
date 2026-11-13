@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # bash-screen: start/stop one isolated GUI session on the remote host.
-# Everything lives under $BASE; nothing touches the user's real desktop session.
+# The tools live under $BASE and the session's own state under $SDIR (the same
+# directory for the default session); nothing touches the user's real desktop.
 #
 #   session.sh start [WIDTHxHEIGHT]   start Xvnc + session bus + window manager
 #   session.sh env                    print the env file path (source it to run commands)
@@ -9,7 +10,8 @@
 set -u
 
 BASE="${BSCREEN_BASE:-$(cd "$(dirname "$0")" && pwd)}"
-RUN="$BASE/run"
+SDIR="${BSCREEN_SESSION_DIR:-$BASE}"
+RUN="$SDIR/run"
 XVNC="$BASE/root/usr/bin/Xtigervnc"
 # Libraries unpacked next to the programs by setup.sh.
 LIBDIR="$(ls -d "$BASE"/root/usr/lib/*-linux-gnu 2>/dev/null | head -1)"
@@ -93,7 +95,7 @@ start() {
     echo "export GDK_BACKEND=x11"
     echo "export QT_ACCESSIBILITY=1"
     echo "export ACCESSIBILITY_ENABLED=1"
-    echo "export AGENT_DESKTOP_HOME='$BASE/state'"
+    echo "export AGENT_DESKTOP_HOME='$SDIR/state'"
     echo "export PATH='$BASE/ad/node_modules/.bin':\"\$PATH\""
   } > "$ENVFILE"
   # shellcheck disable=SC1090

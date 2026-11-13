@@ -1,6 +1,7 @@
-//! Talks to the remote helper over SSH: one request, one JSON response.
+//! Talks to the helper on the host: one request, one JSON response. The host
+//! is reached over SSH, or directly when it is this machine.
 
-use crate::config::{self, Config};
+use crate::config::{self, Target, LOCAL_HOST};
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::Value;
 use std::io::Write;
@@ -14,36 +15,42 @@ const REMOTE_FILES: &[(&str, &str)] = &[
 ];
 
 pub struct Remote {
-    config: Config,
+    target: Target,
 }
 
 impl Remote {
-    pub fn new(config: Config) -> Self {
-        Self { config }
+    pub fn new(target: Target) -> Self {
+        Self { target }
     }
 
-    /// Base `ssh` command. One master connection is reused by every call, which
-    /// phase 0 measured as cutting the per-command overhead to about a fifth.
-    fn ssh(&self) -> Result<Command> {
+    /// A command that runs `shell_command` on the host. Over SSH one master
+    /// connection is reused by every call, which phase 0 measured as cutting
+    /// the per-command overhead to about a fifth.
+    fn shell(&self, shell_command: &str) -> Result<Command> {
+        if self.target.host == LOCAL_HOST {
+            let mut cmd = Command::new("sh");
+            cmd.arg("-c").arg(shell_command);
+            return Ok(cmd);
+        }
         let control = config::state_dir()?.join("cm-%C");
         let mut cmd = Command::new("ssh");
         cmd.args(["-o", "BatchMode=yes", "-o", "ConnectTimeout=10"])
             .args(["-o", "ControlMaster=auto", "-o", "ControlPersist=600"])
             .arg("-o")
             .arg(format!("ControlPath={}", control.display()))
-            .arg(&self.config.host);
+            .arg(&self.target.host)
+            .arg(shell_command);
         Ok(cmd)
     }
 
     fn run(&self, remote_command: &str, stdin: &[u8]) -> Result<(bool, Vec<u8>, String)> {
         let mut child = self
-            .ssh()?
-            .arg(remote_command)
+            .shell(remote_command)?
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .context("cannot run ssh")?;
+            .context("cannot run the command on the host")?;
         child.stdin.take().unwrap().write_all(stdin)?;
         let out = child.wait_with_output()?;
         Ok((
@@ -61,21 +68,21 @@ impl Remote {
                 hash = (hash ^ byte as u64).wrapping_mul(0x100000001b3);
             }
         }
-        let dir = self.config.remote_dir.replace(['/', '~'], "_");
+        let dir = self.target.remote_dir.replace(['/', '~'], "_");
         Ok(config::state_dir()?.join(format!(
             "deployed-{}-{}-{:016x}",
-            self.config.host, dir, hash
+            self.target.host, dir, hash
         )))
     }
 
     /// Copy the helper scripts to the remote directory.
     pub fn deploy(&self) -> Result<()> {
-        let dir = &self.config.remote_dir;
+        let dir = &self.target.remote_dir;
         for (name, content) in REMOTE_FILES {
             let command = format!("mkdir -p {dir} && cat > {dir}/{name} && chmod 700 {dir}/{name}");
             let (ok, _, stderr) = self.run(&command, content.as_bytes())?;
             if !ok {
-                bail!("cannot copy {name} to {}:{dir}: {stderr}", self.config.host);
+                bail!("cannot copy {name} to {}:{dir}: {stderr}", self.target.host);
             }
         }
         std::fs::write(self.deployed_marker()?, b"")?;
@@ -86,11 +93,10 @@ impl Remote {
     pub fn setup(&self) -> Result<bool> {
         self.deploy()?;
         let status = self
-            .ssh()?
-            .arg(format!("bash {}/setup.sh", self.config.remote_dir))
+            .shell(&format!("bash {}/setup.sh", self.target.remote_dir))?
             .stdin(Stdio::null())
             .status()
-            .context("cannot run ssh")?;
+            .context("cannot run the command on the host")?;
         Ok(status.success())
     }
 
@@ -99,14 +105,15 @@ impl Remote {
         if !self.deployed_marker()?.exists() {
             self.deploy()?;
         }
-        request["geometry"] = Value::String(self.config.geometry.clone());
-        let command = format!("python3 {}/bs_remote.py", self.config.remote_dir);
+        request["geometry"] = Value::String(self.target.geometry.clone());
+        request["session"] = Value::String(self.target.session.clone());
+        let command = format!("python3 {}/bs_remote.py", self.target.remote_dir);
         let payload = serde_json::to_vec(&request)?;
         let (_, stdout, stderr) = self.run(&command, &payload)?;
         let response: Value = serde_json::from_slice(&stdout).map_err(|_| {
             anyhow!(
                 "no valid response from {}: {}",
-                self.config.host,
+                self.target.host,
                 if stderr.is_empty() {
                     "empty output".to_string()
                 } else {

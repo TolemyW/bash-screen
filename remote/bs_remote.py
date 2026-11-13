@@ -23,19 +23,20 @@ import hashlib
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
 
-VERSION = "0.1.0"
+VERSION = "0.3.0"
 BASE = os.path.dirname(os.path.abspath(__file__))
-RUN = os.path.join(BASE, "run")
-ENVFILE = os.path.join(RUN, "env.sh")
 SESSION_SH = os.path.join(BASE, "session.sh")
-EVENTS = os.path.join(RUN, "events.jsonl")
-LAST_SNAPSHOT = os.path.join(RUN, "last_snapshot")
-FF_PROFILE = os.path.join(BASE, "ffprofile")
+SESSIONS = os.path.join(BASE, "sessions")
+DEFAULT_SESSION = "main"
 SETTLE_SECONDS = 0.4
+
+# Set by use_session() for the session a request names.
+SESSION = SDIR = RUN = ENVFILE = EVENTS = LAST_SNAPSHOT = FF_PROFILE = None
 
 # Roles that carry no information for an agent unless they have a name.
 NOISE_ROLES = {"group", "unknown", "separator", "scrollarea", "menu", "toolbar", "tablist"}
@@ -46,6 +47,48 @@ class Fail(Exception):
 
 
 # --- session -----------------------------------------------------------------
+
+def session_dir(name):
+    """Where a session keeps its state. The default session lives directly in
+    BASE, which is where the only session lived before sessions had names."""
+    return BASE if name == DEFAULT_SESSION else os.path.join(SESSIONS, name)
+
+
+def use_session(name):
+    """Point this request at one session. Sessions on a host share the
+    installed tools and nothing else: each has its own display, session bus,
+    browser profile and event log."""
+    global SESSION, SDIR, RUN, ENVFILE, EVENTS, LAST_SNAPSHOT, FF_PROFILE
+    ok = 0 < len(name) <= 32 and name[0].isalnum() and all(c.isalnum() or c in "-_" for c in name)
+    if not ok or not name.isascii() or name != name.lower():
+        raise Fail("a session name is 1-32 characters: lower-case letters, digits, - and _")
+    SESSION = name
+    SDIR = session_dir(name)
+    RUN = os.path.join(SDIR, "run")
+    ENVFILE = os.path.join(RUN, "env.sh")
+    EVENTS = os.path.join(RUN, "events.jsonl")
+    LAST_SNAPSHOT = os.path.join(RUN, "last_snapshot")
+    FF_PROFILE = os.path.join(SDIR, "ffprofile")
+
+
+def session_sh(*args):
+    env = dict(os.environ, BSCREEN_BASE=BASE, BSCREEN_SESSION_DIR=SDIR, BSCREEN_MAXIMIZE="1")
+    return subprocess.run([SESSION_SH, *args], capture_output=True, text=True, env=env)
+
+
+def list_sessions():
+    names = [DEFAULT_SESSION]
+    if os.path.isdir(SESSIONS):
+        names += sorted(n for n in os.listdir(SESSIONS) if os.path.isdir(os.path.join(SESSIONS, n)))
+    found = []
+    for name in names:
+        use_session(name)
+        if session_running():
+            found.append({"name": name, "running": True, "display": session_env().get("DISPLAY")})
+        elif name != DEFAULT_SESSION:
+            found.append({"name": name, "running": False})
+    return found
+
 
 def session_running():
     if not os.path.isfile(ENVFILE):
@@ -78,9 +121,8 @@ def ensure_session(geometry):
         if not os.path.exists(os.path.join(BASE, tool)):
             raise Fail("the remote tools are not installed here; run `bash-screen setup` first")
     if os.path.isdir(RUN):
-        subprocess.run([SESSION_SH, "stop"], capture_output=True)
-    env = dict(os.environ, BSCREEN_BASE=BASE, BSCREEN_MAXIMIZE="1")
-    done = subprocess.run([SESSION_SH, "start", geometry], capture_output=True, text=True, env=env)
+        session_sh("stop")
+    done = session_sh("start", geometry)
     if done.returncode != 0 or not session_running():
         raise Fail("could not start the session: " + (done.stderr or done.stdout).strip()[-400:])
     return True
@@ -410,11 +452,25 @@ def firefox_profile():
     return FF_PROFILE
 
 
+def cmd_drag(env, req):
+    (x1, y1), (x2, y2) = [int(v) for v in req["from"]], [int(v) for v in req["to"]]
+    envelope = ad(env, "--headed", "drag", f"--from-xy={x1},{y1}", f"--to-xy={x2},{y2}")
+    if not envelope.get("ok"):
+        raise Fail(ad_error(envelope))
+    return after_action(env, f"drag {x1},{y1} to {x2},{y2}")
+
+
 def cmd_launch(env, req):
     argv = list(req["argv"])
+    if req.get("a11y") is False:
+        # Keep the app off the accessibility bus: nothing can read its
+        # elements, and it is spared the code paths that reading triggers.
+        env = {k: v for k, v in env.items() if k not in ("ACCESSIBILITY_ENABLED", "QT_ACCESSIBILITY")}
+        env.update(NO_AT_BRIDGE="1", GTK_A11Y="none", QT_LINUX_ACCESSIBILITY_ALWAYS_ON="0")
+    elif os.path.basename(argv[0]) == "firefox":
+        env = dict(env, GNOME_ACCESSIBILITY="1")
     if os.path.basename(argv[0]) == "firefox":
         argv = [argv[0], "--no-remote", "--profile", firefox_profile(), *argv[1:]]
-        env = dict(env, GNOME_ACCESSIBILITY="1")
     log = open(os.path.join(RUN, "launch.log"), "ab")
     try:
         subprocess.Popen(argv, env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
@@ -499,9 +555,17 @@ def handle(req):
     cmd = req.get("cmd")
     if cmd == "version":
         return {"version": VERSION}
+    if cmd == "sessions":
+        return {"sessions": list_sessions()}
+    use_session(req.get("session") or DEFAULT_SESSION)
     if cmd == "stop":
-        subprocess.run([SESSION_SH, "stop"], capture_output=True, env=dict(os.environ, BSCREEN_BASE=BASE))
-        return {"stopped": True}
+        session_sh("stop")
+        if req.get("forget"):
+            # Drop what the session saved: its browser profile and tool state.
+            doomed = [FF_PROFILE, os.path.join(SDIR, "state")] if SESSION == DEFAULT_SESSION else [SDIR]
+            for path in doomed:
+                shutil.rmtree(path, ignore_errors=True)
+        return {"stopped": True, "forgotten": bool(req.get("forget"))}
     if cmd == "status":
         if not session_running():
             return {"running": False}
@@ -524,7 +588,7 @@ def handle(req):
         return {"windows": [{"title": w.get("title"), "app": w.get("app_name"), "focused": bool(w.get("is_focused"))}
                             for w in list_windows(env)]}
     table = {"click": cmd_click, "type": cmd_type, "key": cmd_key, "scroll": cmd_scroll,
-             "launch": cmd_launch, "look": cmd_look, "frame": cmd_frame, "input": cmd_input}
+             "launch": cmd_launch, "drag": cmd_drag, "look": cmd_look, "frame": cmd_frame, "input": cmd_input}
     if cmd not in table:
         raise Fail(f"unknown command: {cmd}")
     return table[cmd](env, req)
