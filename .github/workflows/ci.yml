@@ -21,7 +21,7 @@ jobs:
       - run: sh -n scripts/install.sh && sh -n scripts/link-cli.sh && bash -n remote/setup.sh && bash -n remote/session.sh && bash -n tests/local-e2e.sh && bash -n tests/remote-setup.sh && python3 -m py_compile remote/bs_remote.py
 
   # The remote side on a machine with no desktop installed: only the packages
-  # the README asks an administrator for, then everything as a plain user.
+  # docs/reference.md asks an administrator for, then everything as a plain user.
   remote-setup:
     runs-on: ubuntu-24.04
     strategy:
