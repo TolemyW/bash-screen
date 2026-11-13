@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end check of the CLI against this machine as the host ("local"):
 # install, two separate sessions, JSON output, stop. Needs a Debian or Ubuntu
-# machine with the packages the README lists.
+# machine with the packages docs/reference.md lists.
 # Usage: tests/local-e2e.sh <path to the bash-screen binary>
 set -euo pipefail
 
