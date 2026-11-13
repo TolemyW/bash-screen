@@ -161,6 +161,10 @@ enum Cmd {
         /// Seconds between refreshes
         #[arg(long, default_value_t = 1.0)]
         interval: f64,
+        /// Set by bash-screen when it opens the preview beside a pane: show
+        /// whichever session that pane used last
+        #[arg(long, hide = true)]
+        follow: Option<String>,
     },
 }
 
@@ -325,7 +329,7 @@ fn show(reply: &Value, json_output: bool, text: impl FnOnce(&Value)) {
 fn run_preview(host: Option<String>, session: Option<String>, interval: f64) -> Result<()> {
     let explicit = host.is_some() || session.is_some();
     // A pane opened by a command is told its session a moment after it starts.
-    if !explicit && std::env::var_os("HERDR_PANE_ID").is_some() {
+    if !explicit && herdr::preview_is_bound() {
         for _ in 0..10 {
             if herdr::own_preview_target().is_some() {
                 break;
@@ -415,7 +419,10 @@ fn run() -> Result<()> {
         register_host(init_host, remote_dir.as_ref(), geometry.as_ref())?;
         host = Some(init_host.clone());
     }
-    if let Cmd::Preview { interval } = cli.command {
+    if let Cmd::Preview { interval, follow } = cli.command {
+        if let Some(key) = follow {
+            herdr::follow(key);
+        }
         return run_preview(host, session, interval);
     }
 

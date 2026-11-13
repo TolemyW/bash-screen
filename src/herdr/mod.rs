@@ -1,10 +1,14 @@
-//! herdr integration: open the preview as a split next to the calling pane.
+//! herdr integration: open the preview as a split next to the calling pane,
+//! in the herdr terminal multiplexer or in the Herdr desktop app (`app`).
 
 use crate::config::{self, Target, PLUGIN_ID};
 use anyhow::Result;
 use serde_json::Value;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::OnceLock;
+
+mod app;
 
 /// Find the first "pane_id" anywhere in herdr's JSON reply.
 fn find_pane_id(value: &Value) -> Option<String> {
@@ -99,11 +103,33 @@ fn set_preview_target(preview_pane: &str, target: &Target) -> Result<()> {
     Ok(())
 }
 
-/// For a preview running in a herdr pane: the host and session it was opened
-/// for, or was last pointed at. None outside herdr.
+/// Key given with `preview --follow`, when this process is such a preview.
+static FOLLOW: OnceLock<String> = OnceLock::new();
+
+/// Make this preview show whichever session the pane behind `key` used last.
+pub fn follow(key: String) {
+    let _ = FOLLOW.set(key);
+}
+
+/// The file this preview takes its session from: named after its own pane in
+/// herdr, after the key it was started with in the Herdr app.
+fn own_target_key() -> Option<String> {
+    FOLLOW
+        .get()
+        .cloned()
+        .or_else(|| std::env::var("HERDR_PANE_ID").ok())
+}
+
+/// Whether this preview was opened beside a pane, and so is told its session.
+pub fn preview_is_bound() -> bool {
+    own_target_key().is_some()
+}
+
+/// For a preview opened beside a pane: the host and session it was opened
+/// for, or was last pointed at. None for a preview started by hand.
 pub fn own_preview_target() -> Option<(String, String)> {
-    let pane = std::env::var("HERDR_PANE_ID").ok()?;
-    let text = std::fs::read_to_string(preview_target_file(&pane).ok()?).ok()?;
+    let key = own_target_key()?;
+    let text = std::fs::read_to_string(preview_target_file(&key).ok()?).ok()?;
     let mut lines = text.lines();
     Some((lines.next()?.to_string(), lines.next()?.to_string()))
 }
@@ -120,7 +146,11 @@ pub fn ensure_preview_pane(direction: &str, target: &Target) -> Result<Option<St
         std::env::var("HERDR_BIN_PATH"),
         std::env::var("HERDR_PANE_ID"),
     ) else {
-        return Ok(None);
+        // Not the herdr terminal multiplexer; perhaps the Herdr desktop app.
+        return match std::env::var("HC_TERMINAL_ID") {
+            Ok(terminal) => app::ensure_preview_pane(&terminal, direction, target),
+            Err(_) => Ok(None),
+        };
     };
     // One preview per calling pane; the binding survives across CLI invocations.
     let binding = config::state_dir()?.join(format!("preview-{}", pane.replace([':', '/'], "_")));
