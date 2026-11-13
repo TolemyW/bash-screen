@@ -43,7 +43,9 @@ impl Mode {
     pub fn resolve(name: &str) -> Result<Self> {
         Ok(match name {
             "auto" => {
-                if terminal_shows_images() {
+                // The Herdr app's terminals show Kitty images but do not
+                // answer the query for it (and have no glyphs for sextants).
+                if terminal_shows_images() || std::env::var_os("HC_TERMINAL_ID").is_some() {
                     Mode::Image
                 } else {
                     Mode::Blocks(Blocks::Sextant)
@@ -280,8 +282,41 @@ fn kitty_image(png: &[u8], cells_w: usize, cells_h: usize) -> String {
     out
 }
 
+/// Terminal cells a character takes: two for East Asian wide and full-width
+/// characters and for emoji, one otherwise.
+fn cells(c: char) -> usize {
+    match c as u32 {
+        0x1100..=0x115F
+        | 0x2E80..=0xA4CF
+        | 0xAC00..=0xD7A3
+        | 0xF900..=0xFAFF
+        | 0xFE30..=0xFE4F
+        | 0xFF00..=0xFF60
+        | 0xFFE0..=0xFFE6
+        | 0x1F300..=0x1FAFF
+        | 0x20000..=0x3FFFD => 2,
+        _ => 1,
+    }
+}
+
+/// The start of `text` that fits in `width` terminal cells.
 fn clip(text: &str, width: usize) -> String {
-    text.chars().take(width).collect()
+    let mut used = 0;
+    text.chars()
+        .take_while(|&c| {
+            used += cells(c);
+            used <= width
+        })
+        .collect()
+}
+
+/// `text` clipped to `width` terminal cells and padded with spaces to exactly
+/// that many.
+fn fill(text: &str, width: usize) -> String {
+    let mut line = clip(text, width);
+    let used: usize = line.chars().map(cells).sum();
+    line.extend(std::iter::repeat_n(' ', width - used));
+    line
 }
 
 /// Narrowest side column worth having, and how many actions the stacked
@@ -411,7 +446,7 @@ fn compose(
             let _ = write!(out, "\x1b[{row};{column}H");
             match lines.get(row - 1) {
                 Some((true, text)) => {
-                    let _ = write!(out, "{heading}{:<w$}\x1b[0m", clip(text, width), w = width);
+                    let _ = write!(out, "{heading}{}\x1b[0m", fill(text, width));
                 }
                 Some((false, text)) => {
                     let _ = write!(out, "\x1b[2m{}\x1b[0m\x1b[K", clip(text, width));
@@ -424,12 +459,7 @@ fn compose(
             " {}  {}  {}  {}",
             shown.host_line, shown.title, shown.detail, shown.sent_line
         );
-        let _ = write!(
-            out,
-            "\x1b[1;1H{heading}{:<w$}\x1b[0m",
-            clip(&status, geo.cols),
-            w = geo.cols
-        );
+        let _ = write!(out, "\x1b[1;1H{heading}{}\x1b[0m", fill(&status, geo.cols));
         let mut row = 2 + shown.cells_h;
         let skip = shown.events.len().saturating_sub(STACKED_EVENTS);
         for event in &shown.events[skip..] {
@@ -762,5 +792,21 @@ pub fn run(
                 pending = input::read(Duration::ZERO);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::clip;
+
+    #[test]
+    fn clipping_counts_wide_characters_as_two_cells() {
+        assert_eq!(clip("abcdef", 4), "abcd");
+        assert_eq!(clip("数据库test", 5), "数据");
+        assert_eq!(clip("数据库test", 7), "数据库t");
+        // A wide character that would straddle the edge is left out, and the
+        // line is still padded to the full width.
+        assert_eq!(super::fill("数据库", 5), "数据 ");
+        assert_eq!(super::fill("ab", 4), "ab  ");
     }
 }

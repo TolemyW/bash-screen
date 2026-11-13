@@ -21,8 +21,8 @@ GTK apps, and one Electron app (see Known limits).
   accessibility tree) and falls back to screenshots and coordinates for
   anything the tree does not cover.
 - `bash-screen preview` shows the screen and the latest actions in any
-  terminal. Inside herdr, the first call opens it in a pane next to the
-  calling pane.
+  terminal. Inside herdr or the Herdr desktop app, the first call opens it
+  in a pane next to the calling pane.
 
 ## Setup
 
@@ -125,8 +125,11 @@ from `look` and positions instead.
 ## Preview
 
 Inside herdr the preview pane opens by itself and follows the session its
-calling pane last used. Anywhere else, run `bash-screen preview` in a terminal
-of your own; `--host` and `--session` choose what it shows.
+calling pane last used. The same happens in the Herdr desktop app, which needs
+no plugin: with `bash-screen`, `herdr-app` and `hc` on the `PATH`, the first
+command run in one of its terminals splits that pane. Anywhere else, run
+`bash-screen preview` in a terminal of your own; `--host` and `--session`
+choose what it shows.
 
 The preview draws a real image when the terminal supports the Kitty graphics
 protocol, and block characters otherwise. Its text goes wherever the pane has
