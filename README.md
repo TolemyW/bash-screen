@@ -30,6 +30,35 @@ This installs the remote tools, starts a screen and reads it back once as a
 check. It needs no root and can be run again at any time. If the host lacks a
 package, it prints the `apt-get install` command an administrator should run.
 
+## Teach your agent
+
+An agent can run `bash-screen` as soon as it is installed, but it will not
+reach for it unprompted. Install the
+[Agent Skill](skills/bash-screen/SKILL.md) so it knows when and how:
+
+```sh
+bash-screen skill --install
+```
+
+This writes the skill to `~/.claude/skills` and `~/.agents/skills`, where
+Claude Code and other agents that read Agent Skills pick it up at their next
+start. `--dir <skills directory>` installs it somewhere else, such as
+`.claude/skills` in one project. Run it again after an update; the skill is
+part of the binary and always matches its version.
+
+You can also hand the whole job to an agent:
+
+> Install bash-screen from https://github.com/TolemyW/bash-screen, run
+> `bash-screen skill --install`, then connect the host `<ssh-host>` with
+> `bash-screen init`.
+
+Or install only the skill with the
+[skills](https://github.com/vercel-labs/skills) installer:
+
+```sh
+npx skills add TolemyW/bash-screen
+```
+
 ## Commands
 
 ```sh

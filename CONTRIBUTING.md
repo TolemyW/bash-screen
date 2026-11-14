@@ -14,6 +14,7 @@ This needs Rust.
 | Path | Contents |
 |---|---|
 | `src/` | The local CLI and preview (Rust) |
+| `skills/bash-screen/SKILL.md` | The Agent Skill; built into the binary and printed by `bash-screen skill` |
 | `remote/` | Files copied to the remote host: installer, session launcher and helper |
 | `herdr-plugin.toml` | herdr plugin manifest |
 | `scripts/` | Install step of the plugin, and the helper that puts the command on `PATH` |

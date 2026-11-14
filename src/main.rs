@@ -155,6 +155,18 @@ enum Cmd {
     Vnc,
     /// Show or change the preview resolution: a pixel cap, "full", "up" or "down"
     Res { value: Option<String> },
+    /// Print the Agent Skill that teaches a coding agent to use bash-screen,
+    /// or install it with --install
+    Skill {
+        /// Write the skill where coding agents look for skills:
+        /// ~/.claude/skills and ~/.agents/skills
+        #[arg(long)]
+        install: bool,
+        /// Install into this skills directory instead (repeatable), for
+        /// example .claude/skills in a project
+        #[arg(long, value_name = "DIR")]
+        dir: Vec<PathBuf>,
+    },
     /// Live preview of the screen, in this terminal. Inside herdr it opens by
     /// itself beside the pane that runs commands
     Preview {
@@ -384,9 +396,38 @@ fn run_preview(host: Option<String>, session: Option<String>, interval: f64) -> 
     }
 }
 
+/// The skill is part of the binary, so it always describes this version.
+const SKILL: &str = include_str!("../skills/bash-screen/SKILL.md");
+
+/// Print the skill, or write it as `bash-screen/SKILL.md` into each skills
+/// directory.
+fn skill(install: bool, dirs: &[PathBuf]) -> Result<()> {
+    if !install && dirs.is_empty() {
+        print!("{SKILL}");
+        return Ok(());
+    }
+    let home = config::home();
+    let defaults = [home.join(".claude/skills"), home.join(".agents/skills")];
+    let dirs = if dirs.is_empty() { &defaults[..] } else { dirs };
+    for dir in dirs {
+        let folder = dir.join("bash-screen");
+        std::fs::create_dir_all(&folder)
+            .with_context(|| format!("cannot create {}", folder.display()))?;
+        let file = folder.join("SKILL.md");
+        std::fs::write(&file, SKILL).with_context(|| format!("cannot write {}", file.display()))?;
+        println!("installed {}", file.display());
+    }
+    println!("Agents that are already running see the skill after a restart.");
+    Ok(())
+}
+
 fn run() -> Result<()> {
     let cli = Cli::parse();
     let json_output = cli.json;
+
+    if let Cmd::Skill { install, dir } = &cli.command {
+        return skill(*install, dir);
+    }
 
     if let Cmd::Config {
         remote_dir,
@@ -451,7 +492,7 @@ fn run() -> Result<()> {
     let observation = |reply: Value| show(&reply, json_output, print_observation);
 
     match cli.command {
-        Cmd::Config { .. } | Cmd::Preview { .. } => unreachable!(),
+        Cmd::Config { .. } | Cmd::Preview { .. } | Cmd::Skill { .. } => unreachable!(),
         Cmd::Init { .. } => {
             if !remote.setup()? {
                 bail!("setup on {host} did not finish; see the messages above");

@@ -122,7 +122,7 @@ fn default_geometry() -> String {
     "1280x800".into()
 }
 
-fn home() -> PathBuf {
+pub fn home() -> PathBuf {
     PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into()))
 }
 
