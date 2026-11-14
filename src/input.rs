@@ -24,6 +24,11 @@ pub enum Input {
     },
     /// The terminal's answer to "do you report the mouse in pixels?".
     PixelMouse(bool),
+    /// The terminal's answer to "how many pixels is one cell?".
+    CellSize {
+        w: usize,
+        h: usize,
+    },
     /// Ctrl+]: stop controlling the remote screen.
     Leave,
 }
@@ -140,6 +145,14 @@ pub fn parse(bytes: &[u8]) -> Vec<Input> {
                 } else if body.starts_with('?') {
                     if last == b'y' && number(0) == 1016 {
                         out.push(Input::PixelMouse(matches!(number(1), 1 | 3)));
+                    }
+                } else if last == b't' && number(0) == 6 {
+                    // Cell size report: 6;height;width.
+                    if number(1) > 0 && number(2) > 0 {
+                        out.push(Input::CellSize {
+                            w: number(2),
+                            h: number(1),
+                        });
                     }
                 } else if last == b'~' && number(0) == 200 {
                     // Bracketed paste: everything up to the end marker is text.
@@ -282,10 +295,22 @@ pub fn set_terminal(control: bool) {
 /// to arrive marked, then ask whether pixel reporting took effect.
 pub const ENTER_CONTROL: &str = "\x1b[?1000h\x1b[?1006h\x1b[?1016h\x1b[?2004h\x1b[?1016$p";
 pub const LEAVE_CONTROL: &str = "\x1b[?1016l\x1b[?1006l\x1b[?1000l\x1b[?2004l";
+/// Ask the terminal how many pixels one cell takes. Needed where the system
+/// does not know the terminal's size in pixels.
+pub const ASK_CELL_SIZE: &str = "\x1b[16t";
 
 #[cfg(test)]
 mod tests {
     use super::{parse, Input};
+
+    #[test]
+    fn the_cell_size_answer() {
+        assert_eq!(
+            parse(b"\x1b[6;37;17tx"),
+            vec![Input::CellSize { w: 17, h: 37 }, Input::Text("x".into())]
+        );
+        assert_eq!(parse(b"\x1b[6;0;0t"), vec![]);
+    }
 
     fn key(name: &str) -> Input {
         Input::Key(name.into())

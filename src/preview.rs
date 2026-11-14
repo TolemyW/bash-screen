@@ -102,7 +102,9 @@ struct Geometry {
     cell_h: usize,
 }
 
-fn geometry() -> Geometry {
+/// `reported` is the cell size the terminal gave when asked, used where the
+/// system does not know the terminal's size in pixels.
+fn geometry(reported: Option<(usize, usize)>) -> Geometry {
     let mut size: libc::winsize = unsafe { std::mem::zeroed() };
     let ok = unsafe { libc::ioctl(libc::STDOUT_FILENO, libc::TIOCGWINSZ, &mut size) } == 0;
     let (cols, rows) = if ok && size.ws_col > 0 && size.ws_row > 0 {
@@ -110,16 +112,17 @@ fn geometry() -> Geometry {
     } else {
         (80, 24)
     };
-    // Terminals that do not report pixels get a typical cell size.
+    // Failing both sources, a typical cell size.
+    let (asked_w, asked_h) = reported.unwrap_or((9, 18));
     let cell_w = if size.ws_xpixel > 0 {
         size.ws_xpixel as usize / cols
     } else {
-        9
+        asked_w
     };
     let cell_h = if size.ws_ypixel > 0 {
         size.ws_ypixel as usize / rows
     } else {
-        18
+        asked_h
     };
     Geometry {
         cols,
@@ -510,6 +513,8 @@ pub fn run(
     write!(stdout, "\x1b[?25l")?;
     clear_all(&mut stdout, mode)?;
     let mut shown = Shown::default();
+    // Size of one cell in pixels, as answered by the terminal.
+    let mut cell_size = None;
     let mut last_size = (0, 0);
     let mut last_layout = Layout::default();
     // Width / height of the remote screen; refined by the first reply.
@@ -537,11 +542,15 @@ pub fn run(
             (true, true) => format!("CONTROLLING {host}  Ctrl+] to leave"),
             (true, false) => format!("CONTROLLING {host}  ! {notice}"),
         };
-        let geo = geometry();
+        let geo = geometry(cell_size);
         let layout = choose_layout(&geo, aspect);
         let mut redraw = (geo.cols, geo.rows) != last_size || layout != last_layout;
         if redraw {
             // The cached picture no longer fits.
+            if (geo.cols, geo.rows) != last_size {
+                // A new pane size can come with a new cell size.
+                stdout.write_all(input::ASK_CELL_SIZE.as_bytes())?;
+            }
             last_size = (geo.cols, geo.rows);
             last_layout = layout;
             shown = Shown::default();
@@ -718,6 +727,14 @@ pub fn run(
         while let Some(bytes) = pending.take() {
             let mut actions: Vec<serde_json::Value> = Vec::new();
             for item in input::parse(&bytes) {
+                if let Input::CellSize { w, h } = item {
+                    if cell_size != Some((w, h)) {
+                        cell_size = Some((w, h));
+                        // Fetch and place the picture again for the real size.
+                        last_size = (0, 0);
+                    }
+                    continue;
+                }
                 if !control {
                     // Not controlling: keys are commands for the preview itself.
                     let Input::Text(text) = item else { continue };
@@ -751,6 +768,7 @@ pub fn run(
                         input::set_terminal(false);
                     }
                     Input::PixelMouse(reported) => pixel_mouse = reported,
+                    Input::CellSize { .. } => {}
                     Input::Press { button, x, y } => {
                         // A position beyond the pane's cells can only be pixels.
                         pixel_mouse |= x > geo.cols || y > geo.rows;
