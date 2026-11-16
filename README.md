@@ -101,6 +101,35 @@ trip, so expect a fraction of a second between a click and the picture
 changing. For anything finer, `bash-screen vnc` prints how to attach a VNC
 client.
 
+### A native pane in the Herdr desktop app
+
+The preview above is drawn in a terminal. The Herdr desktop app can also show
+the screen as a pane of its own, with a [mod](herdr-app/RECIPE.md):
+
+![The bash-screen pane in the Herdr app](herdr-app/preview.png)
+
+```sh
+git clone https://github.com/TolemyW/bash-screen
+sh bash-screen/herdr-app/install.sh
+herdr-app do pane.split '{"direction":"right","mod":"bash-screen"}'
+```
+
+Or ask an agent in the Herdr app to add the mod from this repository.
+
+- A click on the picture clicks there on the remote screen and gives the pane
+  the keyboard. Typed text, Enter, the arrows and combinations with Ctrl or
+  Alt then go to the remote screen, and the wheel scrolls it.
+- The header shows what the last action did and how long the picture took to
+  answer, usually about a second.
+- `1:2` / `1:1` switches between half-size and full-size pictures.
+- `Take over` opens an SSH tunnel for a VNC client and keeps it until `Stop`.
+- Another host or session: add `"props":{"host":"other-host","session":"research"}`
+  to the `pane.split` arguments.
+
+The mod runs the `bash-screen` CLI for everything, so `bash-screen init` must
+have been run first. It needs a `bash-screen` newer than 0.3.1; until the next
+release, build it from source with `cargo build --release`.
+
 ## Several hosts or screens
 
 Commands act on the default host, which is the first one you `init`, and its
