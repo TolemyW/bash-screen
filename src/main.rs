@@ -155,6 +155,12 @@ enum Cmd {
     Vnc,
     /// Show or change the preview resolution: a pixel cap, "full", "up" or "down"
     Res { value: Option<String> },
+    /// A person's own input, for a viewer such as the Herdr app's pane: inject
+    /// it and return at once, without the observation an agent's action gets.
+    /// ACTIONS is a JSON list, for example
+    /// [{"kind":"click","x":10,"y":20},{"kind":"text","text":"hi"},{"kind":"key","key":"return"},{"kind":"wheel","x":10,"y":20,"dy":-3}]
+    #[command(hide = true)]
+    Input { actions: String },
     /// Print the Agent Skill that teaches a coding agent to use bash-screen,
     /// or install it with --install
     Skill {
@@ -479,6 +485,7 @@ fn run() -> Result<()> {
             | Cmd::Setup
             | Cmd::Init { .. }
             | Cmd::Res { .. }
+            | Cmd::Input { .. }
             | Cmd::Sessions
     ) {
         if let Some(note) = herdr::ensure_preview_pane(&config.preview_direction, &target)? {
@@ -668,6 +675,12 @@ fn run() -> Result<()> {
             println!("preview resolution: {}", describe(chosen));
             let levels: Vec<String> = config::RES_LEVELS.iter().map(|&v| describe(v)).collect();
             println!("steps: {}", levels.join(", "));
+        }
+        Cmd::Input { actions } => {
+            let actions: Value =
+                serde_json::from_str(&actions).context("ACTIONS must be a JSON list of actions")?;
+            let reply = remote.call(json!({"cmd": "input", "actions": actions}))?;
+            show(&reply, json_output, |reply| println!("done: {}", reply["done"]));
         }
         Cmd::Vnc => {
             let reply = remote.call(json!({"cmd": "status"}))?;
