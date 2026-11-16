@@ -46,7 +46,7 @@ A pane that shows the screen of a remote Linux machine, the one a coding agent i
 - Showing one picture file and overwriting it flashes on every change. Keep two and write to the hidden one.
 - `mv` into place, never write the PNG in place: the app may read a half-written file.
 - Without the screenshot comparison the whole window redraws every 1.5 s. A page with a blinking caret or a clock still changes every time.
-- Use `bash-screen input`, not `click`, `type` and `key`: those read the whole window back after each action and take three times as long. `input` needs bash-screen newer than 0.3.1.
+- Use `bash-screen input`, not `click`, `type` and `key`: those read the whole window back after each action and take three times as long. `input` needs bash-screen 0.4.0 or later.
 - Text starting with `-` fails remotely, so leading dashes are sent as `minus` key presses and the rest as text.
 - The tunnel's process id is kept in `localStorage`, and checked with `kill -0` on start: a reload of the mod must not lose a running tunnel, nor show one that has died.
 - Each batch is one SSH round trip, around half a second, and the picture follows about a second later: fine for helping out, too slow for working in; that is what `Take over` is for. Text composed with an input method does not arrive; only plain key presses do.

@@ -140,8 +140,7 @@ Or ask an agent in the Herdr app to add the mod from this repository.
   to the `pane.split` arguments.
 
 The mod runs the `bash-screen` CLI for everything, so `bash-screen init` must
-have been run first. It needs a `bash-screen` newer than 0.3.1; until the next
-release, build it from source with `cargo build --release`.
+have been run first. It needs `bash-screen` 0.4.0 or later.
 
 ## Several hosts or screens
 
