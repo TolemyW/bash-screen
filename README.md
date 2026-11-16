@@ -70,11 +70,24 @@ bash-screen key ctrl+l
 bash-screen scroll --ref e40
 bash-screen drag 200,300 600,300
 bash-screen look               # screenshot saved locally as PNG
+bash-screen wait --text Saved  # until an element contains the text; also --gone, --title
 bash-screen stop
+```
+
+Several steps can go in one command, which saves a round trip and an
+observation for each:
+
+```sh
+bash-screen do click e7 then type "Ada" then key tab return then wait --text Saved
 ```
 
 - Every action prints a fresh observation. Refs are valid only for the latest
   observation. Coordinates are screen pixels.
+- `wait` without a condition waits until the screen stops changing. It fails
+  after `--timeout` seconds (15 by default).
+- In `do`, the steps are `click`, `type`, `key`, `scroll`, `drag` and `wait`,
+  separated by the word `then`. Their refs are the ones you saw before the
+  command. If a step fails, the ones after it are not run.
 - `--json` on any command gives the reply as one line of JSON. For `look` the
   JSON names the saved file.
 - If an app misbehaves when its elements are read, start it with

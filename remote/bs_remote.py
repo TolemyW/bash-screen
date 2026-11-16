@@ -28,7 +28,7 @@ import subprocess
 import sys
 import time
 
-VERSION = "0.3.0"
+VERSION = "0.3.1"
 BASE = os.path.dirname(os.path.abspath(__file__))
 SESSION_SH = os.path.join(BASE, "session.sh")
 SESSIONS = os.path.join(BASE, "sessions")
@@ -37,6 +37,12 @@ SETTLE_SECONDS = 0.4
 
 # Set by use_session() for the session a request names.
 SESSION = SDIR = RUN = ENVFILE = EVENTS = LAST_SNAPSHOT = FF_PROFILE = None
+
+# Set while a batch of steps runs (see cmd_do): refs keep meaning what they
+# meant in the observation the batch was written from, and single steps do
+# not observe.
+PINNED_SNAPSHOT = None
+IN_BATCH = False
 
 # Roles that carry no information for an agent unless they have a name.
 NOISE_ROLES = {"group", "unknown", "separator", "scrollarea", "menu", "toolbar", "tablist"}
@@ -246,6 +252,8 @@ def full_ref(short):
     """Expand "e12" to the qualified ref of the latest observation."""
     if short.startswith("@"):
         return short
+    if PINNED_SNAPSHOT:
+        return f"@{PINNED_SNAPSHOT}:{short}"
     try:
         with open(LAST_SNAPSHOT) as f:
             return f"@{f.read().strip()}:{short}"
@@ -311,7 +319,7 @@ def after_action(env, summary):
     """Settle, log, and return the fresh observation that every action reports."""
     time.sleep(SETTLE_SECONDS)
     log_event(summary)
-    return observe(env)
+    return {} if IN_BATCH else observe(env)
 
 
 def cmd_click(env, req):
@@ -423,6 +431,104 @@ def cmd_input(env, req):
     for summary in merged:
         log_event("you: " + summary)
     return {"done": len(done)}
+
+
+def window_strings(env):
+    """Title of the current window and every name and value in it, for `wait`."""
+    window, _ = current_window(env)
+    if window is None:
+        return "", []
+    title = window.get("title") or ""
+    envelope = ad(env, "snapshot", "--window-id", window["id"], timeout=40)
+    if not envelope.get("ok"):
+        return title, []
+    tree = envelope["data"]["tree"]
+    document = visible_document(tree, title)
+    found = []
+
+    def walk(node):
+        if node.get("role") == "webarea" and document is not None and node.get("name") != document:
+            return  # a hidden document
+        for key in ("name", "value"):
+            if node.get(key) not in (None, ""):
+                found.append(str(node[key]))
+        for child in node.get("children", []):
+            walk(child)
+
+    walk(tree)
+    return title, found
+
+
+def cmd_wait(env, req):
+    """Wait until every given condition holds, then observe. Without a
+    condition, wait until the picture on the screen stops changing."""
+    text, gone, title = req.get("text"), req.get("gone"), req.get("title")
+    stable = bool(req.get("stable")) or not (text or gone or title)
+    timeout = min(float(req.get("timeout", 15)), 300.0)
+    wanted = [f"{label} {json.dumps(value, ensure_ascii=False)}"
+              for label, value in (("text", text), ("gone", gone), ("title", title)) if value]
+    summary = "wait " + ", ".join(wanted + (["stable"] if stable else []))
+    started = time.time()
+    last_picture, seen_title = None, ""
+    while True:
+        unmet = []
+        if text or gone or title:
+            seen_title, strings = window_strings(env)
+            has = lambda needle: any(needle.lower() in s.lower() for s in strings)
+            if text and not has(text):
+                unmet.append(f"no element contains {json.dumps(text, ensure_ascii=False)}")
+            if gone and has(gone):
+                unmet.append(f"an element still contains {json.dumps(gone, ensure_ascii=False)}")
+            if title and title.lower() not in seen_title.lower():
+                unmet.append(f"the window title does not contain {json.dumps(title, ensure_ascii=False)}")
+        if stable:
+            picture = hashlib.sha1(screenshot_png(env)).hexdigest()
+            if picture != last_picture:
+                unmet.append("the screen was still changing")
+            last_picture = picture
+        waited = time.time() - started
+        if not unmet:
+            log_event(f"{summary} ({waited:.1f} s)")
+            result = {} if IN_BATCH else observe(env)
+            result["waited"] = round(waited, 1)
+            return result
+        if waited >= timeout:
+            log_event(f"{summary} timed out", ok=False)
+            where = f"; the window is titled {json.dumps(seen_title, ensure_ascii=False)}" if seen_title else ""
+            raise Fail(f"waited {timeout:g} s but " + " and ".join(unmet) + where)
+        time.sleep(0.5)
+
+
+def cmd_do(env, req):
+    """Several steps in one request, with one observation at the end.
+
+    Refs in the steps belong to the observation the caller last saw, so they
+    are resolved against that one throughout, whatever the steps change.
+    """
+    global PINNED_SNAPSHOT, IN_BATCH
+    steps = req.get("steps") or []
+    try:
+        with open(LAST_SNAPSHOT) as f:
+            PINNED_SNAPSHOT = f.read().strip() or None
+    except OSError:
+        PINNED_SNAPSHOT = None
+    IN_BATCH = True
+    table = {"click": cmd_click, "type": cmd_type, "key": cmd_key, "scroll": cmd_scroll,
+             "drag": cmd_drag, "wait": cmd_wait}
+    try:
+        for number, step in enumerate(steps, 1):
+            if step.get("cmd") not in table:
+                raise Fail(f'step {number}: {step.get("cmd")} cannot be used in `do`')
+            try:
+                table[step["cmd"]](env, step)
+            except Fail as error:
+                raise Fail(f'step {number} of {len(steps)} ({step.get("cmd")}) failed: {error}. '
+                           f"{number - 1} step(s) before it were done; run `observe` to see where things stand")
+    finally:
+        PINNED_SNAPSHOT, IN_BATCH = None, False
+    result = observe(env)
+    result["steps"] = len(steps)
+    return result
 
 
 def firefox_profile():
@@ -588,7 +694,8 @@ def handle(req):
         return {"windows": [{"title": w.get("title"), "app": w.get("app_name"), "focused": bool(w.get("is_focused"))}
                             for w in list_windows(env)]}
     table = {"click": cmd_click, "type": cmd_type, "key": cmd_key, "scroll": cmd_scroll,
-             "launch": cmd_launch, "drag": cmd_drag, "look": cmd_look, "frame": cmd_frame, "input": cmd_input}
+             "launch": cmd_launch, "drag": cmd_drag, "look": cmd_look, "frame": cmd_frame, "input": cmd_input,
+             "wait": cmd_wait, "do": cmd_do}
     if cmd not in table:
         raise Fail(f"unknown command: {cmd}")
     return table[cmd](env, req)

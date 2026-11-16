@@ -37,7 +37,41 @@ bash-screen scroll --dy -5     # negative is down; --ref e40 scrolls an element 
 bash-screen look               # screenshot saved locally as PNG; prints the path
 ```
 
-Rules that matter:
+## Do several steps at once
+
+When you already know the next few steps, send them as one command. It is one
+round trip and prints one observation at the end:
+
+```sh
+bash-screen do click e7 then type "Ada" then key tab then type "ada@example.org" then key return then wait --text Saved
+```
+
+- Steps are `click`, `type`, `key`, `scroll`, `drag` and `wait`, written as
+  usual and separated by the bare word `then`.
+- Refs in every step are the ones from the observation you last saw, even
+  though earlier steps change the window.
+- If a step fails, the later ones are not run and the error names the step.
+  Run `observe` to see where things stand.
+- Stop the batch where you need to read something before deciding.
+
+## Wait instead of guessing
+
+After anything that loads or takes time, wait for a sign of the result rather
+than observing again and again:
+
+```sh
+bash-screen wait --text "Order placed"    # some element's name or value contains it (case-insensitive)
+bash-screen wait --gone "Loading"         # no element contains it any more
+bash-screen wait --title Dashboard        # the window title contains it
+bash-screen wait                          # the screen has stopped changing
+```
+
+`wait` prints an observation when the condition holds, and fails after
+`--timeout` seconds (default 15) saying what was still missing. Several
+conditions can be combined; all must hold. With `launch --no-a11y` apps only
+the plain `wait` works.
+
+## Rules that matter
 
 - Every action prints a fresh observation. Read it instead of calling
   `observe` again.

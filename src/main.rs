@@ -25,7 +25,9 @@ bash-screen launch -- firefox https://example.org\n  \
 bash-screen observe            # elements of the current window, each with a ref like e12\n  \
 bash-screen click e12          # or: bash-screen click 640,400\n  \
 bash-screen type --ref e7 hello\n  \
-bash-screen look               # screenshot, when the element list is not enough\n\n\
+bash-screen look               # screenshot, when the element list is not enough\n  \
+bash-screen wait --text Saved  # until an element contains the text, instead of observing again\n  \
+bash-screen do click e7 then type hello then key return   # several steps, one observation\n\n\
 Every action prints a fresh observation. Refs are only valid for the latest observation.\n\
 Coordinates are screen pixels, the same as in `look` images at scale 1.\n\n\
 Commands act on the default host and its session \"main\". Use --host and --session\n\
@@ -148,6 +150,33 @@ enum Cmd {
         no_a11y: bool,
         #[arg(last = true, required = true)]
         argv: Vec<String>,
+    },
+    /// Wait until the window is ready, then observe. Without a condition:
+    /// until the screen stops changing
+    Wait {
+        /// Until some element's name or value contains this (case-insensitive)
+        #[arg(long)]
+        text: Option<String>,
+        /// Until no element contains this any more
+        #[arg(long)]
+        gone: Option<String>,
+        /// Until the window title contains this
+        #[arg(long)]
+        title: Option<String>,
+        /// Also until the screen stops changing
+        #[arg(long)]
+        stable: bool,
+        /// Give up with an error after this many seconds
+        #[arg(long, default_value_t = 15.0)]
+        timeout: f64,
+    },
+    /// Run several steps in one go, separated by the word "then", and observe
+    /// once at the end: bash-screen do click e7 then type hello then key return
+    /// then wait --text Saved. Steps: click, type, key, scroll, drag, wait.
+    /// Refs keep the meaning they had in the observation you last saw
+    Do {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
+        steps: Vec<String>,
     },
     /// List the windows in the session
     Windows,
@@ -402,6 +431,64 @@ fn run_preview(host: Option<String>, session: Option<String>, interval: f64) -> 
     }
 }
 
+/// The request the helper on the host gets for one action or wait.
+fn step_request(command: Cmd) -> Result<Value> {
+    Ok(match command {
+        Cmd::Click {
+            target,
+            button,
+            count,
+        } => {
+            let mut request = json!({"cmd": "click", "button": button, "count": count});
+            if target.contains(',') {
+                let xy = parse_numbers(&target, 2, "a position")?;
+                request["x"] = json!(xy[0]);
+                request["y"] = json!(xy[1]);
+            } else {
+                request["ref"] = json!(target);
+            }
+            request
+        }
+        Cmd::Drag { from, to } => {
+            let from = parse_numbers(&from, 2, "the start position")?;
+            let to = parse_numbers(&to, 2, "the end position")?;
+            json!({"cmd": "drag", "from": from, "to": to})
+        }
+        Cmd::Type { target, text } => {
+            let mut request = json!({"cmd": "type", "text": text});
+            if let Some(target) = target {
+                request["ref"] = json!(target);
+            }
+            request
+        }
+        Cmd::Key { keys } => {
+            if keys.is_empty() {
+                bail!("give at least one key combo, for example: bash-screen key ctrl+l");
+            }
+            json!({"cmd": "key", "keys": keys})
+        }
+        Cmd::Scroll { target, dy } => {
+            let mut request = json!({"cmd": "scroll"});
+            match (target, dy) {
+                (Some(target), _) => request["ref"] = json!(target),
+                (None, dy) => request["dy"] = json!(dy.unwrap_or(-5)),
+            }
+            request
+        }
+        Cmd::Wait {
+            text,
+            gone,
+            title,
+            stable,
+            timeout,
+        } => json!({
+            "cmd": "wait", "text": text, "gone": gone, "title": title,
+            "stable": stable, "timeout": timeout,
+        }),
+        _ => bail!("not an action"),
+    })
+}
+
 /// The skill is part of the binary, so it always describes this version.
 const SKILL: &str = include_str!("../skills/bash-screen/SKILL.md");
 
@@ -586,46 +673,41 @@ fn run() -> Result<()> {
             scale,
             output,
         } => look(&remote, region, scale, output, json_output)?,
-        Cmd::Click {
-            target,
-            button,
-            count,
-        } => {
-            let mut request = json!({"cmd": "click", "button": button, "count": count});
-            if target.contains(',') {
-                let xy = parse_numbers(&target, 2, "a position")?;
-                request["x"] = json!(xy[0]);
-                request["y"] = json!(xy[1]);
-            } else {
-                request["ref"] = json!(target);
+        command @ (Cmd::Click { .. }
+        | Cmd::Drag { .. }
+        | Cmd::Type { .. }
+        | Cmd::Key { .. }
+        | Cmd::Scroll { .. }
+        | Cmd::Wait { .. }) => observation(remote.call(step_request(command)?)?),
+        Cmd::Do { steps } => {
+            let mut requests = Vec::new();
+            for (index, words) in steps.split(|word| word == "then").enumerate() {
+                let number = index + 1;
+                if words.is_empty() {
+                    bail!("step {number} is empty: put a step on each side of \"then\"");
+                }
+                let parsed = Cli::try_parse_from(
+                    std::iter::once("bash-screen").chain(words.iter().map(String::as_str)),
+                )
+                .map_err(|error| {
+                    anyhow::anyhow!("step {number} ({}): {}", words.join(" "), error.kind())
+                })?;
+                match parsed.command {
+                    command @ (Cmd::Click { .. }
+                    | Cmd::Drag { .. }
+                    | Cmd::Type { .. }
+                    | Cmd::Key { .. }
+                    | Cmd::Scroll { .. }
+                    | Cmd::Wait { .. }) => requests.push(
+                        step_request(command).with_context(|| format!("step {number}"))?,
+                    ),
+                    _ => bail!(
+                        "step {number} ({}): only click, type, key, scroll, drag and wait can be steps",
+                        words[0]
+                    ),
+                }
             }
-            observation(remote.call(request)?);
-        }
-        Cmd::Drag { from, to } => {
-            let from = parse_numbers(&from, 2, "the start position")?;
-            let to = parse_numbers(&to, 2, "the end position")?;
-            observation(remote.call(json!({"cmd": "drag", "from": from, "to": to}))?);
-        }
-        Cmd::Type { target, text } => {
-            let mut request = json!({"cmd": "type", "text": text});
-            if let Some(target) = target {
-                request["ref"] = json!(target);
-            }
-            observation(remote.call(request)?);
-        }
-        Cmd::Key { keys } => {
-            if keys.is_empty() {
-                bail!("give at least one key combo, for example: bash-screen key ctrl+l");
-            }
-            observation(remote.call(json!({"cmd": "key", "keys": keys}))?);
-        }
-        Cmd::Scroll { target, dy } => {
-            let mut request = json!({"cmd": "scroll"});
-            match (target, dy) {
-                (Some(target), _) => request["ref"] = json!(target),
-                (None, dy) => request["dy"] = json!(dy.unwrap_or(-5)),
-            }
-            observation(remote.call(request)?);
+            observation(remote.call(json!({"cmd": "do", "steps": requests}))?);
         }
         Cmd::Launch {
             wait,
@@ -680,7 +762,9 @@ fn run() -> Result<()> {
             let actions: Value =
                 serde_json::from_str(&actions).context("ACTIONS must be a JSON list of actions")?;
             let reply = remote.call(json!({"cmd": "input", "actions": actions}))?;
-            show(&reply, json_output, |reply| println!("done: {}", reply["done"]));
+            show(&reply, json_output, |reply| {
+                println!("done: {}", reply["done"])
+            });
         }
         Cmd::Vnc => {
             let reply = remote.call(json!({"cmd": "status"}))?;

@@ -37,6 +37,21 @@ echo "== screenshot of each"
 BASH_SCREEN_SESSION=second "$bs" look --scale 0.25 -o "$work/two.png"
 test -s "$work/one.png" && test -s "$work/two.png"
 
+echo "== waiting, alone and as steps of a batch"
+"$bs" wait --timeout 10
+"$bs" --json do wait then wait --stable --timeout 10 | tee "$work/do.json"
+grep -q '"steps":2' "$work/do.json"
+if "$bs" wait --text "no such text" --timeout 1 2>"$work/wait.err"; then
+  echo "a wait for text that never appears must fail" >&2
+  exit 1
+fi
+grep -q 'waited 1 s' "$work/wait.err"
+if "$bs" do wait then launch -- true 2>"$work/do.err"; then
+  echo "launch must not be accepted as a step" >&2
+  exit 1
+fi
+grep -q 'step 2' "$work/do.err"
+
 echo "== stopping one leaves the other"
 "$bs" --session second stop
 "$bs" sessions | tee "$work/sessions.txt"
