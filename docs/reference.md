@@ -31,7 +31,7 @@ do not work, because agent-desktop needs glibc 2.35.
 
 The host must already have these packages:
 
-- `dbus`, `at-spi2-core`, `xauth`, `x11-xkb-utils`
+- `dbus`, `at-spi2-core`, `x11-xkb-utils`
 - Python 3 with Pillow
 - on Ubuntu 22.04 also `xkb-data`, which any host with a desktop has
 - optionally `python3-gi` and `gir1.2-atspi-2.0`, for [reading text](#reading-text)

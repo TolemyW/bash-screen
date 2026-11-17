@@ -47,9 +47,22 @@ start() {
   if [ -f "$ENVFILE" ]; then echo "session already started; run: $0 stop" >&2; exit 1; fi
   mkdir -p "$RUN" && chmod 700 "$RUN"
 
-  # Private X authority so only this user can connect to the display.
+  # Private X authority so only this user can connect to the display: one
+  # random cookie for any display number, since the server picks the number
+  # only once it runs. This is what `xauth add` would write.
   export XAUTHORITY="$RUN/Xauthority"
   : > "$XAUTHORITY" && chmod 600 "$XAUTHORITY"
+  python3 - "$XAUTHORITY" <<'PYTHON'
+import os, struct, sys
+
+def field(data):
+    return struct.pack(">H", len(data)) + data
+
+wild = 0xFFFF  # any host, and with an empty number any display
+entry = struct.pack(">H", wild) + field(b"") + field(b"") + field(b"MIT-MAGIC-COOKIE-1") + field(os.urandom(16))
+with open(sys.argv[1], "wb") as out:
+    out.write(entry)
+PYTHON
 
   # Let the server pick a free display number and report it back.
   local fdfile="$RUN/displayfd"
@@ -75,7 +88,6 @@ start() {
   done
   if [ -z "$n" ]; then echo "Xvnc did not report a display; see $RUN/xvnc.log" >&2; exit 1; fi
   export DISPLAY=":$n"
-  xauth -f "$XAUTHORITY" add "$DISPLAY" . "$(mcookie)" 2>/dev/null
 
   # Private runtime dir and session bus: apps must not attach to the real desktop.
   export XDG_RUNTIME_DIR="$RUN/xdg"

@@ -29,8 +29,6 @@ check apt-get apt
 check dpkg dpkg
 check python3 python3
 check dbus-daemon dbus
-check xauth xauth
-check mcookie util-linux
 check xkbcomp x11-xkb-utils
 if [ -x /usr/libexec/at-spi-bus-launcher ]; then say "  ok       at-spi bus"; else say "  MISSING  at-spi bus"; needs_admin+=(at-spi2-core); fi
 if python3 -c 'import PIL' >/dev/null 2>&1; then say "  ok       python Pillow"; else say "  MISSING  python Pillow"; needs_admin+=(python3-pil); fi

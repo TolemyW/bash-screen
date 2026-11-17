@@ -39,7 +39,7 @@ jobs:
       - name: Packages an administrator provides
         run: |
           apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends             dbus at-spi2-core xauth x11-xkb-utils python3 python3-pil ca-certificates ${{ matrix.extra }}
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends             dbus at-spi2-core x11-xkb-utils python3 python3-pil ca-certificates ${{ matrix.extra }}
       - name: Set up and use a session as a plain user
         run: |
           useradd -m tester
@@ -55,5 +55,5 @@ jobs:
       - name: Packages an administrator provides
         run: |
           sudo apt-get update
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends             dbus at-spi2-core xauth x11-xkb-utils python3 python3-pil
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends             dbus at-spi2-core x11-xkb-utils python3 python3-pil
       - run: bash tests/local-e2e.sh target/release/bash-screen
