@@ -882,10 +882,13 @@ def cmd_look(env, req):
         image = image.resize((max(1, int(image.width * scale)), max(1, int(image.height * scale))), Image.LANCZOS)
     out = io.BytesIO()
     image.save(out, "WEBP", quality=int(req.get("quality", 60)))
-    return {
+    reply = {
         "image_webp": base64.b64encode(out.getvalue()).decode(),
         "screen": [width, height], "origin": origin, "scale": scale, "size": [image.width, image.height],
     }
+    if req.get("events"):  # asked for by a pane that shows the screen to a person
+        reply["events"] = read_events(int(req["events"]))
+    return reply
 
 
 def cmd_frame(env, req):

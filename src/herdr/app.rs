@@ -2,11 +2,12 @@
 //! runs the terminals. A terminal there knows its own address from
 //! HC_TERMINAL_ID.
 
-use super::{choose_direction, set_preview_target};
+use super::{choose_direction, set_preview_target, viewer_of_target, viewer_open};
 use crate::config::{self, Target};
 use anyhow::Result;
 use serde_json::{json, Value};
 use std::process::Command;
+use std::time::Duration;
 
 /// Run a program that prints JSON; None when it is missing, fails or prints
 /// something else.
@@ -52,9 +53,25 @@ fn is_preview(terminal: &str, key: &str) -> bool {
     })
 }
 
-/// Make sure a preview pane sits beside the pane of `terminal`. Returns a note
-/// for the user when a pane was opened or could not be opened; does nothing
-/// when the app's window does not show this terminal.
+const MOD: &str = "bash-screen";
+
+/// How long a pane that was just opened is given to show its first picture.
+const OPENING: Duration = Duration::from_secs(15);
+
+/// Whether the app has a version of the bash-screen mod that says when it is
+/// open. Without that, nothing tells a closed pane from an open one.
+fn mod_installed() -> bool {
+    let home = std::env::var_os("HERDR_APP_HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| config::home().join(".config").join("herdr-app"));
+    std::fs::read_to_string(home.join("mods").join(MOD).join("main.js"))
+        .is_ok_and(|source| source.contains("--viewer"))
+}
+
+/// Make sure the screen is shown beside the pane of `terminal`: by the
+/// bash-screen mod when the app has it, else by the preview in a terminal.
+/// Returns a note for the user when a pane was opened or could not be opened;
+/// does nothing when the app's window does not show this terminal.
 pub fn ensure_preview_pane(
     terminal: &str,
     direction: &str,
@@ -65,12 +82,21 @@ pub fn ensure_preview_pane(
     let scope = std::env::var("HC_SCOPE").unwrap_or_default();
     let key = format!("{terminal}-{scope}").replace([':', '/'], "_");
     let binding = config::state_dir()?.join(format!("preview-{key}"));
-    // The preview shows whichever session its calling pane used last.
+    // The pane shows whichever session its calling pane used last.
     set_preview_target(&key, target)?;
     if let Ok(existing) = std::fs::read_to_string(&binding) {
         if is_preview(existing.trim(), &key) {
             return Ok(None);
         }
+    }
+    // A mod pane says by itself that it is open: one that follows this
+    // terminal, or one that a person opened on this very session.
+    let opened = config::state_dir()?.join(format!("preview-mod-{key}"));
+    let opening = std::fs::metadata(&opened)
+        .and_then(|file| file.modified())
+        .is_ok_and(|at| at.elapsed().is_ok_and(|age| age < OPENING));
+    if opening || viewer_open(&key) || viewer_open(&viewer_of_target(target)) {
+        return Ok(None);
     }
     let Some(pane) = json_from("herdr-app", &["ls"]).and_then(|ls| pane_of(&ls, terminal)) else {
         return Ok(None);
@@ -81,9 +107,10 @@ pub fn ensure_preview_pane(
             .map_or("up", |(cols, rows)| choose_direction(cols, rows)),
         other => other,
     };
-    let had_focus =
-        json_from("herdr-app", &["status"]).is_some_and(|status| status["focused_pane"] == pane);
-    let program = std::env::current_exe()?;
+    // A split gives the new pane the keyboard. It goes back to whichever pane
+    // had it, which need not be the calling one.
+    let focused = json_from("herdr-app", &["status"])
+        .and_then(|status| status["focused_pane"].as_str().map(str::to_string));
     // The app splits only to the right or downwards; "up" is a downward
     // split followed by swapping the two panes.
     let split = if direction == "right" {
@@ -91,31 +118,53 @@ pub fn ensure_preview_pane(
     } else {
         "down"
     };
-    let made = app_do(
-        "pane.split",
-        json!({
-            "direction": split,
-            "pane": pane,
-            "argv": [program.to_string_lossy(), "preview", "--follow", key],
-        }),
-    );
-    let (new_pane, new_terminal) = match &made {
-        Ok(reply) => match (reply["pane"].as_str(), reply["terminal"].as_str()) {
-            (Some(new_pane), Some(new_terminal)) => (new_pane, new_terminal),
-            _ => return Ok(Some(format!("preview pane not opened: {reply}"))),
-        },
+    let with_mod = mod_installed();
+    let made = if with_mod {
+        app_do(
+            "pane.split",
+            json!({
+                "direction": split,
+                "pane": pane,
+                "mod": MOD,
+                "props": {"follow": key, "host": target.host, "session": target.session},
+            }),
+        )
+    } else {
+        let program = std::env::current_exe()?;
+        app_do(
+            "pane.split",
+            json!({
+                "direction": split,
+                "pane": pane,
+                "argv": [program.to_string_lossy(), "preview", "--follow", key],
+            }),
+        )
+    };
+    let reply = match &made {
+        Ok(reply) => reply,
         Err(error) => return Ok(Some(format!("preview pane not opened: {error}"))),
     };
-    std::fs::write(&binding, new_terminal)?;
+    let Some(new_pane) = reply["pane"].as_str() else {
+        return Ok(Some(format!("preview pane not opened: {reply}")));
+    };
+    let name = if with_mod {
+        // Its age is what counts; the pane is noted for whoever looks into it.
+        std::fs::write(&opened, new_pane)?;
+        "the bash-screen mod"
+    } else {
+        let Some(new_terminal) = reply["terminal"].as_str() else {
+            return Ok(Some(format!("preview pane not opened: {reply}")));
+        };
+        std::fs::write(&binding, new_terminal)?;
+        new_terminal
+    };
     if direction == "up" {
         let _ = app_do("pane.swap", json!({"pane": new_pane, "target": pane}));
     }
-    if had_focus {
-        let _ = app_do("pane.focus", json!({"pane": pane}));
+    if let Some(focused) = focused {
+        let _ = app_do("pane.focus", json!({"pane": focused}));
     }
-    Ok(Some(format!(
-        "preview pane opened ({new_terminal}, {direction})"
-    )))
+    Ok(Some(format!("preview pane opened ({name}, {direction})")))
 }
 
 #[cfg(test)]

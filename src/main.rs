@@ -109,6 +109,10 @@ enum Cmd {
         /// Output file (default: a file under the local state directory)
         #[arg(short, long)]
         output: Option<PathBuf>,
+        /// For a pane that shows the screen to a person: say that it is
+        /// open, and add the recent actions, host and session to the reply
+        #[arg(long, hide = true)]
+        viewer: bool,
     },
     /// Click an element ref (e12), a screen position (x,y), or the element
     /// with a name (--name Save)
@@ -262,14 +266,21 @@ fn parse_numbers(text: &str, count: usize, what: &str) -> Result<Vec<i64>> {
     Ok(numbers)
 }
 
+/// How many recent actions a viewer pane is sent with each picture.
+const VIEWER_EVENTS: u32 = 12;
+
 fn look(
     remote: &Remote,
     region: Option<String>,
     scale: f64,
     output: Option<PathBuf>,
     json_output: bool,
+    viewer: Option<(&str, &str)>,
 ) -> Result<()> {
     let mut request = json!({"cmd": "look", "scale": scale});
+    if viewer.is_some() {
+        request["events"] = json!(VIEWER_EVENTS);
+    }
     if let Some(region) = region {
         request["region"] = json!(parse_numbers(&region, 4, "--region")?);
     }
@@ -293,6 +304,10 @@ fn look(
         // The picture is in the file; the reply says where it is.
         reply.as_object_mut().unwrap().remove("image_webp");
         reply["path"] = json!(path.display().to_string());
+        if let Some((host, session)) = viewer {
+            reply["host"] = json!(host);
+            reply["session"] = json!(session);
+        }
         println!("{reply}");
         return Ok(());
     }
@@ -564,7 +579,7 @@ fn run() -> Result<()> {
     // Which host and session: the command line, then the environment, then
     // the defaults.
     let mut host = cli.host.clone().or_else(|| env_value("BASH_SCREEN_HOST"));
-    let session = cli
+    let mut session = cli
         .session
         .clone()
         .or_else(|| env_value("BASH_SCREEN_SESSION"));
@@ -577,6 +592,12 @@ fn run() -> Result<()> {
         register_host(init_host, remote_dir.as_ref(), geometry.as_ref())?;
         host = Some(init_host.clone());
     }
+    // A viewer pane opened beside a pane shows what that pane used last.
+    let follow = env_value("BASH_SCREEN_FOLLOW");
+    if let Some((bound_host, bound_session)) = follow.as_deref().and_then(herdr::followed_target) {
+        host = Some(bound_host);
+        session = Some(bound_session);
+    }
     if let Cmd::Preview { interval, follow } = cli.command {
         if let Some(key) = follow {
             herdr::follow(key);
@@ -588,17 +609,24 @@ fn run() -> Result<()> {
     let target = config.target(host.as_deref(), session.as_deref())?;
     let config_max_px = config.preview_max_px;
 
+    if let Cmd::Look { viewer: true, .. } = cli.command {
+        herdr::viewer_seen(follow.as_deref(), &target)?;
+    }
     // Any agent-facing command brings up the preview beside the calling pane.
-    if !matches!(
-        cli.command,
-        Cmd::Stop { .. }
-            | Cmd::Vnc
-            | Cmd::Setup
-            | Cmd::Init { .. }
-            | Cmd::Res { .. }
-            | Cmd::Input { .. }
-            | Cmd::Sessions
-    ) {
+    // A viewer pane is not an agent.
+    if follow.is_none()
+        && !matches!(
+            cli.command,
+            Cmd::Stop { .. }
+                | Cmd::Vnc
+                | Cmd::Setup
+                | Cmd::Init { .. }
+                | Cmd::Res { .. }
+                | Cmd::Input { .. }
+                | Cmd::Look { viewer: true, .. }
+                | Cmd::Sessions
+        )
+    {
         if let Some(note) = herdr::ensure_preview_pane(&config.preview_direction, &target)? {
             eprintln!("bash-screen: {note}");
         }
@@ -606,6 +634,7 @@ fn run() -> Result<()> {
     // "host" in messages names the session too, when it is not the default one.
     let host = target.label();
     let ssh_host = target.host.clone();
+    let session_name = target.session.clone();
     let remote = Remote::new(target);
     let observation = |reply: Value| show(&reply, json_output, print_observation);
 
@@ -710,7 +739,11 @@ fn run() -> Result<()> {
             region,
             scale,
             output,
-        } => look(&remote, region, scale, output, json_output)?,
+            viewer,
+        } => {
+            let shows = viewer.then_some((ssh_host.as_str(), session_name.as_str()));
+            look(&remote, region, scale, output, json_output, shows)?
+        }
         command @ (Cmd::Click { .. }
         | Cmd::Drag { .. }
         | Cmd::Type { .. }

@@ -176,12 +176,37 @@ The argument is a JSON list. Each action has a `kind`:
 - Each action appears in the action log marked `you:`.
 - It does not open the preview pane.
 
+A viewer takes its pictures with `bash-screen look --viewer`, which differs
+from a plain `look` in three ways:
+
+- With `--json`, the reply also has `events`, the last 12 entries of the
+  action log (each with `seq`, `ok` and `what`), and the `host` and `session`
+  the picture is of.
+- It records that a viewer of that session is open. For ten seconds after,
+  commands in the Herdr app do not open a pane for that session.
+- It does not open the preview pane.
+
+With `BASH_SCREEN_FOLLOW=<key>` in its environment, a viewer that a command
+opened beside a terminal acts on the session that terminal last used, whatever
+`--host` and `--session` say. The key is given to the mod as the prop
+`follow`.
+
 ## Preview
 
 The preview pane follows the session its calling pane last used. In the Herdr
 desktop app it needs no plugin, only `bash-screen`, `herdr-app` and `hc` on
 the `PATH`. `bash-screen preview --host <host> --session <name>` chooses what
 a preview of your own shows.
+
+In the Herdr desktop app the pane is the [mod](../herdr-app/RECIPE.md) when
+version 0.5.2 or later of it is installed, and the preview in a terminal
+otherwise.
+
+- No pane is opened while a mod pane shows the session, whether a command
+  opened it or you did.
+- A terminal preview that is already open beside the calling pane is kept.
+  Close it to get the mod pane at the next command.
+- The keyboard stays with the pane that had it.
 
 It draws a real image when the terminal supports the Kitty graphics protocol,
 and block characters otherwise. Its text goes wherever the pane has spare

@@ -1,6 +1,6 @@
 // The remote screen of a bash-screen session, as a pane in the Herdr app.
-// Everything goes through the bash-screen CLI: `look` for the picture, and
-// `click`, `type`, `key` and `scroll` for what the person does on it.
+// Everything goes through the bash-screen CLI: `look` for the picture and the
+// recent actions, and `input` for what the person does on it.
 import { View, div, image } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { exec, theme, appHome, props, checking, nextCommand, notify } from "herdr";
@@ -21,15 +21,24 @@ const SWAP_MS = 500; // measured: the app shows a saved picture 0.2 to 0.45 s la
 // How long the mark of a press stays after its outcome is known.
 const MARK_MS = 900;
 const WHEEL_STEP = 40; // pixels of wheel travel for one notch on the remote side
+// The recent actions, the agent's and the person's, are listed in whatever room
+// the picture leaves: under it, or beside it when the pane is wider than the picture.
+const LOG_LINE = 18;
+const LOG_PAD = 4; // above the first line when under the picture
+const LOG_MOST = 12; // the CLI sends this many
+const LOG_SIDE = 200; // narrowest column worth having beside the picture
 
 // Takes a screenshot and publishes it only when it differs from the last one.
 // Arguments: work file, last-published copy, file to publish to, shrink factor, "first" when nothing is shown yet
-// (the copy kept from before a reload must not count as already shown), then bash-screen's own flags.
+// (the copy kept from before a reload must not count as already shown), the key of the pane to follow or "-",
+// then bash-screen's own flags. `--viewer` tells the CLI that this pane is open, so that it does not open
+// another one, and asks for the recent actions.
 const LOOK = [
-  'next=$1; last=$2; target=$3; scale=$4; first=$5; shift 5',
+  'next=$1; last=$2; target=$3; scale=$4; first=$5; follow=$6; shift 6',
+  '[ "$follow" = - ] || export BASH_SCREEN_FOLLOW="$follow"',
   '[ "$first" = first ] && rm -f "$last"',
   'mkdir -p "$(dirname "$next")" "$(dirname "$target")"',
-  'bash-screen "$@" --json look --scale "$scale" -o "$next" || exit 1',
+  'bash-screen "$@" --json look --viewer --scale "$scale" -o "$next" || exit 1',
   'if cmp -s "$next" "$last"; then echo same; else cp "$next" "$last" && mv "$next" "$target" && echo changed; fi',
 ].join("; ");
 
@@ -53,6 +62,8 @@ export default class Screen extends View {
     this.pressed = null; // { at, what, sent }: timing of the action the person is waiting on
     this.size = null; // of this pane, logical pixels
     this.screen = null; // of the remote display, [width, height]
+    this.showing = null; // { host, session } the CLI says the picture is of
+    this.events = []; // recent actions on that screen, oldest first: { seq, ok, what }
     this.front = null; // "a" or "b": the picture on top; the other one receives the next change
     this.busy = false;
     this.error = null;
@@ -107,9 +118,26 @@ export default class Screen extends View {
     return flags;
   }
 
+  // A pane opened by the CLI beside a terminal is given that terminal's key as
+  // `follow`, and shows whichever session the terminal used last. The CLI reads
+  // the key from its environment and then ignores --host and --session.
+  follow() {
+    const key = (props() ?? {}).follow;
+    return key ? String(key) : null;
+  }
+
+  // Runs the CLI for this pane's session.
+  cli(args, options) {
+    const key = this.follow();
+    const words = [...this.target(), ...args];
+    if (!key) return exec("bash-screen", words, options);
+    return exec("env", [`BASH_SCREEN_FOLLOW=${key}`, "bash-screen", ...words], options);
+  }
+
   label() {
     const p = props() ?? {};
-    return [p.host ?? "default host", p.session ?? "main"].join(" · ");
+    const s = this.showing ?? {};
+    return [s.host ?? p.host ?? "default host", s.session ?? p.session ?? "main"].join(" · ");
   }
 
   // Redraws only when something the person can see has changed.
@@ -119,15 +147,18 @@ export default class Screen extends View {
     cx.spawn(async (cx) => {
       const home = appHome();
       const back = this.front === "a" ? "b" : "a";
-      let error = null, changed = false, screen = this.screen;
+      let error = null, changed = false, screen = this.screen, events = this.events, showing = this.showing;
       try {
         const r = await exec("sh", ["-c", LOOK, "bash-screen-look",
           `${home}/${WORK}/${this.id}-next.png`, `${home}/${WORK}/${this.id}-last.png`,
-          `${home}/${this.path(back)}`, this.scale, this.front ? "later" : "first", ...this.target()], { timeout: 20000 });
+          `${home}/${this.path(back)}`, this.scale, this.front ? "later" : "first", this.follow() ?? "-",
+          ...this.target()], { timeout: 20000 });
         const lines = r.stdout.trim().split("\n");
         const reply = parse(lines[0]);
         if (r.code === 0 && reply?.ok) {
           screen = reply.screen;
+          events = reply.events ?? [];
+          if (reply.host) showing = { host: reply.host, session: reply.session };
           changed = lines[lines.length - 1] === "changed";
         } else {
           error = (reply?.error || r.stderr || r.stdout || "bash-screen failed").trim();
@@ -135,9 +166,12 @@ export default class Screen extends View {
       } catch (e) {
         error = String(e?.message ?? e);
       }
-      const redraw = error !== this.error || String(screen) !== String(this.screen);
+      const redraw = error !== this.error || String(screen) !== String(this.screen)
+        || stamp(events) !== stamp(this.events) || JSON.stringify(showing) !== JSON.stringify(this.showing);
       this.error = error;
       this.screen = screen;
+      this.events = events;
+      this.showing = showing;
       if (redraw) cx.notify();
       if (!changed) {
         this.busy = false;
@@ -206,7 +240,7 @@ export default class Screen extends View {
         const what = batch.map(describe).join(", ");
         let ok = false;
         try {
-          const r = await exec("bash-screen", [...this.target(), "--json", "input", JSON.stringify(batch)], { timeout: 30000 });
+          const r = await this.cli(["--json", "input", JSON.stringify(batch)], { timeout: 30000 });
           ok = r.code === 0;
         } catch (_e) {
           ok = false;
@@ -282,7 +316,7 @@ export default class Screen extends View {
     cx.spawn(async (cx) => {
       let problem = "take over: failed";
       try {
-        const r = await exec("bash-screen", [...this.target(), "vnc"], { timeout: 20000 });
+        const r = await this.cli(["vnc"], { timeout: 20000 });
         const words = r.stdout.split("\n")[0].trim().split(" ");
         const port = (r.stdout.match(/-L (\d+):/) ?? [])[1];
         if (r.code === 0 && words[0] === "ssh" && port) {
@@ -348,12 +382,32 @@ export default class Screen extends View {
   }
 
   // The largest size with the screen's proportions that fits under the header.
+  // The picture comes first; the log gets the room that is left over, `log`:
+  // "below" the picture, at its "side", or null when neither has room for it.
   shown() {
     if (!this.size || !this.screen) return null;
     const room = { width: this.size.width, height: this.size.height - HEADER };
     if (room.width <= 0 || room.height <= 0) return null;
     const k = Math.min(room.width / this.screen[0], room.height / this.screen[1]);
-    return { width: Math.floor(this.screen[0] * k), height: Math.floor(this.screen[1] * k) };
+    const width = Math.floor(this.screen[0] * k);
+    const height = Math.floor(this.screen[1] * k);
+    const below = Math.floor((room.height - height - LOG_PAD) / LOG_LINE);
+    let log = null;
+    if (below >= 1) log = { where: "below", width, lines: Math.min(LOG_MOST, below) };
+    else if (room.width - width >= LOG_SIDE) {
+      log = { where: "side", width: room.width - width, lines: Math.min(LOG_MOST, Math.floor(room.height / LOG_LINE)) };
+    }
+    return { width, height, log: log && log.lines > 0 ? log : null };
+  }
+
+  // The last actions on the screen, oldest first.
+  log(log, t) {
+    const recent = this.events.slice(-log.lines);
+    return v_flex().w(log.width).flex_none().px(8).text_size(12)
+      .when(log.where === "below", (el) => el.pt(LOG_PAD))
+      .children(recent.map((e) => h_flex().h(LOG_LINE).flex_none().gap(8).items_center()
+        .child(div().w(36).flex_none().text_color(t.dim).child(String(e.seq)))
+        .child(div().flex_1().truncate().text_color(e.ok === false ? t.blocked : t.muted).child(e.what))));
   }
 
   button(id, text, t, action) {
@@ -412,12 +466,18 @@ export default class Screen extends View {
         .child(this.error ?? "Waiting for the first picture …");
     }
 
+    const log = this.front && shown && this.events.length ? shown.log : null;
     return v_flex().id("root").size_full().bg(t.background)
       .track_focus(this.handle)
       .on_key_down((event, cx) => this.key(event, cx))
       .on_size_change((size, cx) => { this.size = size; cx.notify(); })
       .child(header)
-      .child(h_flex().flex_1().justify_center().items_start().child(body));
+      // With the log at its side the picture moves to the left edge; otherwise it is centred.
+      .child(h_flex().flex_none().items_start().when(log?.where !== "side", (el) => el.justify_center())
+        .child(body)
+        .when(log?.where === "side", (el) => el.child(this.log(log, t))))
+      .when(log?.where === "below", (el) => el
+        .child(h_flex().flex_none().justify_center().child(this.log(log, t))));
   }
 }
 
@@ -435,6 +495,12 @@ function describe(action) {
   if (action.kind === "text") return `type ${action.text.length} chars`;
   if (action.kind === "key") return `key ${action.key}`;
   return `scroll ${action.dy}`;
+}
+
+// Changes exactly when the list of actions does: sequence numbers only grow.
+function stamp(events) {
+  const last = events[events.length - 1];
+  return last ? `${events.length}:${last.seq}` : "";
 }
 
 function parse(text) {

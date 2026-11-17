@@ -7,6 +7,7 @@ use serde_json::Value;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::OnceLock;
+use std::time::Duration;
 
 mod app;
 
@@ -103,6 +104,45 @@ fn set_preview_target(preview_pane: &str, target: &Target) -> Result<()> {
     Ok(())
 }
 
+/// The host and session that the pane behind `key` used last: what a viewer
+/// opened beside that pane shows.
+pub fn followed_target(key: &str) -> Option<(String, String)> {
+    let text = std::fs::read_to_string(preview_target_file(key).ok()?).ok()?;
+    let mut lines = text.lines();
+    Some((lines.next()?.to_string(), lines.next()?.to_string()))
+}
+
+/// How long a viewer pane counts as open after it last said so. It says so
+/// with every picture it takes, about every two seconds.
+const VIEWER_FRESH: Duration = Duration::from_secs(10);
+
+/// File whose age says when a viewer of `what` was last seen. `what` is the
+/// key of the pane it follows, or a host and session.
+fn viewer_file(what: &str) -> Result<PathBuf> {
+    Ok(config::state_dir()?.join(format!("viewer-{}", what.replace([':', '/'], "_"))))
+}
+
+fn viewer_of_target(target: &Target) -> String {
+    format!("{}_{}", target.host, target.session)
+}
+
+/// Record that a viewer pane is showing `target` now, for the pane behind
+/// `follow` when it follows one.
+pub fn viewer_seen(follow: Option<&str>, target: &Target) -> Result<()> {
+    std::fs::write(viewer_file(&viewer_of_target(target))?, b"")?;
+    if let Some(key) = follow {
+        std::fs::write(viewer_file(key)?, b"")?;
+    }
+    Ok(())
+}
+
+/// Whether a viewer of `what` said it was open a moment ago.
+fn viewer_open(what: &str) -> bool {
+    viewer_file(what)
+        .and_then(|path| Ok(std::fs::metadata(path)?.modified()?))
+        .is_ok_and(|seen| seen.elapsed().is_ok_and(|age| age < VIEWER_FRESH))
+}
+
 /// Key given with `preview --follow`, when this process is such a preview.
 static FOLLOW: OnceLock<String> = OnceLock::new();
 
@@ -128,10 +168,7 @@ pub fn preview_is_bound() -> bool {
 /// For a preview opened beside a pane: the host and session it was opened
 /// for, or was last pointed at. None for a preview started by hand.
 pub fn own_preview_target() -> Option<(String, String)> {
-    let key = own_target_key()?;
-    let text = std::fs::read_to_string(preview_target_file(&key).ok()?).ok()?;
-    let mut lines = text.lines();
-    Some((lines.next()?.to_string(), lines.next()?.to_string()))
+    followed_target(&own_target_key()?)
 }
 
 /// When running inside a herdr pane, make sure a preview pane sits beside it.
