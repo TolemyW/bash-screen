@@ -7,8 +7,8 @@ from stdin and writes one JSON response to stdout:
     request:  {"cmd": "<name>", ...arguments}
     response: {"ok": true, ...} or {"ok": false, "error": "<message>"}
 
-It drives one GUI session (see session.sh) through agent-desktop, and adds the
-normalisation that phase 0 showed to be necessary:
+It drives one GUI session (see session.sh) through agent-desktop, and adds
+what agent-desktop alone does not give:
 
   * clicks go through "read the element bounds, click the centre", because
     agent-desktop's headed ref click is refused on web content and its semantic
@@ -17,8 +17,6 @@ normalisation that phase 0 showed to be necessary:
     to the next, for as long as the element is in the window;
   * every action is followed by a short settle wait and a fresh observation,
     reported as what changed when little did.
-
-This is the minimal stand-in for the planned Rust session supervisor.
 """
 import base64
 import hashlib

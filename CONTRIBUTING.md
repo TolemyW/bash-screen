@@ -17,11 +17,12 @@ This needs Rust.
 | `skills/bash-screen/SKILL.md` | The Agent Skill; built into the binary and printed by `bash-screen skill` |
 | `remote/` | Files copied to the remote host: installer, session launcher and helper |
 | `herdr-plugin.toml` | herdr plugin manifest |
+| `herdr-app/` | The mod that shows the remote screen in a pane of the Herdr app |
+| `docs/reference.md` | Reference: configuration, host requirements, command details |
 | `scripts/` | Install step of the plugin, and the helper that puts the command on `PATH` |
 | `.github/workflows/` | Tests on every push; binaries published for every version tag |
 | `tests/remote-setup.sh` | End-to-end check of the remote side on a bare machine |
 | `tests/local-e2e.sh` | End-to-end check of the CLI with this machine as the host |
-| `tests/fixture/` | Test page and request-logging server used as a test oracle |
 
 ## Tests
 
