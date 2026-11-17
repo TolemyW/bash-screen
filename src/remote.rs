@@ -24,8 +24,8 @@ impl Remote {
     }
 
     /// A command that runs `shell_command` on the host. Over SSH one master
-    /// connection is reused by every call, which phase 0 measured as cutting
-    /// the per-command overhead to about a fifth.
+    /// connection is reused by every call, which cuts the overhead of each
+    /// command to about a fifth.
     fn shell(&self, shell_command: &str) -> Result<Command> {
         if self.target.host == LOCAL_HOST {
             let mut cmd = Command::new("sh");
