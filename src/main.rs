@@ -23,12 +23,14 @@ use std::time::Duration;
 Typical loop:\n  \
 bash-screen launch -- firefox https://example.org\n  \
 bash-screen observe            # elements of the current window, each with a ref like e12\n  \
-bash-screen click e12          # or: bash-screen click 640,400\n  \
+bash-screen click e12          # or: bash-screen click 640,400, or: bash-screen click --name Save\n  \
 bash-screen type --ref e7 hello\n  \
+bash-screen text               # the text of the page, for reading\n  \
 bash-screen look               # screenshot, when the element list is not enough\n  \
 bash-screen wait --text Saved  # until an element contains the text, instead of observing again\n  \
 bash-screen do click e7 then type hello then key return   # several steps, one observation\n\n\
-Every action prints a fresh observation. Refs are only valid for the latest observation.\n\
+Every action prints what changed in the window, or the whole list when much did.\n\
+A ref stays with its element for as long as the element is in the window.\n\
 Coordinates are screen pixels, the same as in `look` images at scale 1.\n\n\
 Commands act on the default host and its session \"main\". Use --host and --session\n\
 (or BASH_SCREEN_HOST and BASH_SCREEN_SESSION) for another host, or for a second,\n\
@@ -93,6 +95,9 @@ enum Cmd {
         #[arg(long)]
         all: bool,
     },
+    /// Print the text of the current window as a person reads it, without
+    /// refs: for reading a page. In a browser, only the page
+    Text,
     /// Take a screenshot and save it locally as PNG
     Look {
         /// Only this region: x,y,width,height in screen pixels
@@ -105,9 +110,14 @@ enum Cmd {
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
-    /// Click an element ref (e12) or a screen position (x,y)
+    /// Click an element ref (e12), a screen position (x,y), or the element
+    /// with a name (--name Save)
     Click {
-        target: String,
+        #[arg(required_unless_present = "name", conflicts_with = "name")]
+        target: Option<String>,
+        /// The element with this name instead of a ref; it must be the only one
+        #[arg(long)]
+        name: Option<String>,
         /// left, right or middle
         #[arg(long)]
         button: Option<String>,
@@ -125,16 +135,21 @@ enum Cmd {
     /// Type text into an element, or into whatever has keyboard focus
     Type {
         /// Element ref to type into; without it the text is pasted at the focus
-        #[arg(long = "ref")]
+        #[arg(long = "ref", conflicts_with = "name")]
         target: Option<String>,
+        /// The element with this name instead of a ref; it must be the only one
+        #[arg(long)]
+        name: Option<String>,
         text: String,
     },
     /// Press key combos in order, for example: ctrl+l  return  down
     Key { keys: Vec<String> },
-    /// Scroll an element into view (--ref), or turn the wheel (--dy, negative is down)
+    /// Scroll an element into view (--ref or --name), or turn the wheel (--dy, negative is down)
     Scroll {
-        #[arg(long = "ref")]
+        #[arg(long = "ref", conflicts_with = "name")]
         target: Option<String>,
+        #[arg(long)]
+        name: Option<String>,
         #[arg(long, allow_hyphen_values = true)]
         dy: Option<i32>,
     },
@@ -215,8 +230,10 @@ enum Cmd {
     },
 }
 
+/// After an action the helper also says what changed, when that is shorter
+/// than the whole list; that is what an agent reads then.
 fn print_observation(reply: &Value) {
-    if let Some(text) = reply["text"].as_str() {
+    if let Some(text) = reply["brief"].as_str().or(reply["text"].as_str()) {
         println!("{text}");
     }
     if let Some(windows) = reply["windows"].as_array() {
@@ -436,16 +453,19 @@ fn step_request(command: Cmd) -> Result<Value> {
     Ok(match command {
         Cmd::Click {
             target,
+            name,
             button,
             count,
         } => {
             let mut request = json!({"cmd": "click", "button": button, "count": count});
-            if target.contains(',') {
-                let xy = parse_numbers(&target, 2, "a position")?;
-                request["x"] = json!(xy[0]);
-                request["y"] = json!(xy[1]);
-            } else {
-                request["ref"] = json!(target);
+            match (target, name) {
+                (Some(target), _) if target.contains(',') => {
+                    let xy = parse_numbers(&target, 2, "a position")?;
+                    request["x"] = json!(xy[0]);
+                    request["y"] = json!(xy[1]);
+                }
+                (Some(target), _) => request["ref"] = json!(target),
+                (None, name) => request["name"] = json!(name),
             }
             request
         }
@@ -454,10 +474,13 @@ fn step_request(command: Cmd) -> Result<Value> {
             let to = parse_numbers(&to, 2, "the end position")?;
             json!({"cmd": "drag", "from": from, "to": to})
         }
-        Cmd::Type { target, text } => {
+        Cmd::Type { target, name, text } => {
             let mut request = json!({"cmd": "type", "text": text});
             if let Some(target) = target {
                 request["ref"] = json!(target);
+            }
+            if let Some(name) = name {
+                request["name"] = json!(name);
             }
             request
         }
@@ -467,11 +490,12 @@ fn step_request(command: Cmd) -> Result<Value> {
             }
             json!({"cmd": "key", "keys": keys})
         }
-        Cmd::Scroll { target, dy } => {
+        Cmd::Scroll { target, name, dy } => {
             let mut request = json!({"cmd": "scroll"});
-            match (target, dy) {
-                (Some(target), _) => request["ref"] = json!(target),
-                (None, dy) => request["dy"] = json!(dy.unwrap_or(-5)),
+            match (target, name, dy) {
+                (Some(target), _, _) => request["ref"] = json!(target),
+                (None, Some(name), _) => request["name"] = json!(name),
+                (None, None, dy) => request["dy"] = json!(dy.unwrap_or(-5)),
             }
             request
         }
@@ -668,6 +692,20 @@ fn run() -> Result<()> {
             });
         }
         Cmd::Observe { all } => observation(remote.call(json!({"cmd": "observe", "all": all}))?),
+        Cmd::Text => {
+            let reply = remote.call(json!({"cmd": "text"}))?;
+            show(&reply, json_output, |reply| {
+                println!(
+                    "window: {} ({})",
+                    reply["title"].as_str().unwrap_or("?"),
+                    reply["app"].as_str().unwrap_or("?")
+                );
+                if let Some(note) = reply["note"].as_str() {
+                    println!("({note})");
+                }
+                println!("{}", reply["text"].as_str().unwrap_or(""));
+            });
+        }
         Cmd::Look {
             region,
             scale,

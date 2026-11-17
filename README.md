@@ -65,10 +65,12 @@ npx skills add TolemyW/bash-screen
 bash-screen launch -- firefox https://example.org
 bash-screen observe            # elements of the current window, each with a ref
 bash-screen click e12          # a ref, or a screen position such as 640,400
+bash-screen click --name Save  # or the one element with that name
 bash-screen type --ref e7 hello
 bash-screen key ctrl+l
 bash-screen scroll --ref e40
 bash-screen drag 200,300 600,300
+bash-screen text               # the text of the page
 bash-screen look               # screenshot saved locally as PNG
 bash-screen wait --text Saved  # until an element contains the text; also --gone, --title
 bash-screen stop
@@ -81,8 +83,11 @@ observation for each:
 bash-screen do click e7 then type "Ada" then key tab return then wait --text Saved
 ```
 
-- Every action prints a fresh observation. Refs are valid only for the latest
-  observation. Coordinates are screen pixels.
+- Every action prints what it changed in the window, or the whole list of
+  elements when much changed. A ref stays with its element for as long as the
+  element is in the window. Coordinates are screen pixels.
+- `--name` works in place of a ref for `click`, `type` and `scroll`. It
+  matches the whole name or a part of it and must match one element.
 - `wait` without a condition waits until the screen stops changing. It fails
   after `--timeout` seconds (15 by default).
 - In `do`, the steps are `click`, `type`, `key`, `scroll`, `drag` and `wait`,

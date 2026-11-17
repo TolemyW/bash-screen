@@ -43,13 +43,75 @@ agent-desktop) is unpacked into the remote directory without root.
 `config`, `setup` and `start`. Finished steps are skipped when it runs again.
 `--remote-dir` and `--geometry` change the defaults.
 
+## Observations, refs and names
+
+`observe` lists the elements of the current window that can be acted on, each
+with a ref such as `e12`. `--all` adds named elements that cannot, such as
+headings.
+
+- A ref stays with its element from one observation to the next. Whether an
+  element is still the same one is judged by its role, its name and its place
+  among the elements that share both.
+- A ref is never given to a second element. One whose element has gone fails
+  with `e12 is not in the window any more`.
+- Elements with the same role and name, such as a `Delete` button in every
+  row, are told apart only by their order. When one goes, each one after it
+  takes over the ref of the one before, and the last ref is reported gone.
+- An element whose name changes, such as a button going from `Save` to
+  `Saving…`, counts as one gone and one new.
+
+After an action, a `wait` or a `do`, the reply says what changed since the
+observation before:
+
+```
+window: Orders — Mozilla Firefox (firefox-bin)
+3 changed (+ new, ~ different, - gone); the other 28 elements and their refs are as before
++ [e31] button "Undo"
+~ [e28] textfield "Name" = "Ada"
+- [e27] button "Delete"
+```
+
+- The whole list is printed instead when the current window is another one,
+  when the observation before was made with `--all`, or when more than half
+  of the elements (and more than 12) changed.
+- `observe` always prints the whole list.
+- With `--json`, `text` is always the whole list and `brief`, when present,
+  is the report of changes.
+
+`click`, `type` and `scroll` take `--name <text>` in place of a ref.
+
+- The window is read at that moment, so no observation is needed first, and
+  in a `do` a name can aim at an element that an earlier step brought up.
+- An element matches when its name is the text, whatever the case. If none
+  is, elements whose name contains the text match.
+- It fails when no element matches, and when several do; the error lists
+  them.
+
+## Reading text
+
+`bash-screen text` prints what the current window says, without refs. In a
+browser it prints only the page, not the toolbars.
+
+- A paragraph is one line, with the text of its links in place.
+- A table row is one line, with ` | ` between cells.
+- An input shows its content in `[ ]`; a password input shows `*` for each
+  character.
+- Parts that are not showing, such as other tabs, are left out. Text that is
+  only scrolled out of view is included.
+
+This reads the accessibility bus directly and needs two more packages on the
+host, `python3-gi` and `gir1.2-atspi-2.0`. `init` does not ask for them.
+Without them `text` prints the names of the elements only, says so, and
+leaves out running text such as paragraphs; `wait --text` and `wait --gone`
+then do not see that text either.
+
 ## Waiting and batches
 
 `bash-screen wait` returns an observation once its conditions hold:
 
 | Option | Holds when |
 |---|---|
-| `--text <text>` | The name or value of some element in the current window contains the text |
+| `--text <text>` | The name or value of some element in the current window, or a line of its text, contains the text |
 | `--gone <text>` | No element contains the text |
 | `--title <text>` | The title of the current window contains the text |
 | `--stable` | Two screenshots taken half a second apart are identical |
@@ -79,9 +141,9 @@ bash-screen do click e7 then type "Ada" then key tab return then wait --text Sav
   their usual arguments. Other commands are rejected before anything is sent.
 - Steps are separated by the word `then` on its own. The single word `then`
   can therefore not be typed in a batch; text that only contains it can.
-- Refs are resolved against the observation made before the batch, for every
-  step, so a ref stays usable after earlier steps have changed the window. A
-  ref to an element that has since disappeared fails.
+- Nothing is observed between the steps, so refs mean what they meant in the
+  observation made before the batch, for every step. A ref to an element
+  that has since disappeared fails.
 - A failing step ends the batch. The error names the step and says how many
   were done before it; nothing is undone.
 - With `--json`, the reply has `steps`, the number of steps that ran. The

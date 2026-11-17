@@ -52,6 +52,22 @@ if "$bs" do wait then launch -- true 2>"$work/do.err"; then
 fi
 grep -q 'step 2' "$work/do.err"
 
+echo "== names and text need a window, and say so"
+if "$bs" click --name "no such button" 2>"$work/name.err"; then
+  echo "a click on a name must fail on an empty screen" >&2
+  exit 1
+fi
+grep -q 'no such button' "$work/name.err"
+if "$bs" text 2>"$work/text.err"; then
+  echo "text must fail on an empty screen" >&2
+  exit 1
+fi
+grep -q 'no window' "$work/text.err"
+if "$bs" click e1 2>"$work/ref.err"; then
+  echo "a ref must fail before any observation of a window" >&2
+  exit 1
+fi
+
 echo "== stopping one leaves the other"
 "$bs" --session second stop
 "$bs" sessions | tee "$work/sessions.txt"

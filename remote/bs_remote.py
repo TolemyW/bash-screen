@@ -13,8 +13,10 @@ normalisation that phase 0 showed to be necessary:
   * clicks go through "read the element bounds, click the centre", because
     agent-desktop's headed ref click is refused on web content and its semantic
     click can hang GTK3 apps that open a modal dialog;
-  * refs are short ("e12") and always belong to the latest observation;
-  * every action is followed by a short settle wait and a fresh observation.
+  * refs are short ("e12") and stay with their element from one observation
+    to the next, for as long as the element is in the window;
+  * every action is followed by a short settle wait and a fresh observation,
+    reported as what changed when little did.
 
 This is the minimal stand-in for the planned Rust session supervisor.
 """
@@ -36,12 +38,9 @@ DEFAULT_SESSION = "main"
 SETTLE_SECONDS = 0.4
 
 # Set by use_session() for the session a request names.
-SESSION = SDIR = RUN = ENVFILE = EVENTS = LAST_SNAPSHOT = FF_PROFILE = None
+SESSION = SDIR = RUN = ENVFILE = EVENTS = REFS = FF_PROFILE = None
 
-# Set while a batch of steps runs (see cmd_do): refs keep meaning what they
-# meant in the observation the batch was written from, and single steps do
-# not observe.
-PINNED_SNAPSHOT = None
+# Set while a batch of steps runs (see cmd_do): single steps do not observe.
 IN_BATCH = False
 
 # Roles that carry no information for an agent unless they have a name.
@@ -64,7 +63,7 @@ def use_session(name):
     """Point this request at one session. Sessions on a host share the
     installed tools and nothing else: each has its own display, session bus,
     browser profile and event log."""
-    global SESSION, SDIR, RUN, ENVFILE, EVENTS, LAST_SNAPSHOT, FF_PROFILE
+    global SESSION, SDIR, RUN, ENVFILE, EVENTS, REFS, FF_PROFILE
     ok = 0 < len(name) <= 32 and name[0].isalnum() and all(c.isalnum() or c in "-_" for c in name)
     if not ok or not name.isascii() or name != name.lower():
         raise Fail("a session name is 1-32 characters: lower-case letters, digits, - and _")
@@ -73,7 +72,7 @@ def use_session(name):
     RUN = os.path.join(SDIR, "run")
     ENVFILE = os.path.join(RUN, "env.sh")
     EVENTS = os.path.join(RUN, "events.jsonl")
-    LAST_SNAPSHOT = os.path.join(RUN, "last_snapshot")
+    REFS = os.path.join(RUN, "refs.json")
     FF_PROFILE = os.path.join(SDIR, "ffprofile")
 
 
@@ -189,8 +188,8 @@ def visible_document(tree, title):
     return max(matches, key=len) if matches else None
 
 
-def compact_lines(node, lines, show_all, document=None):
-    """Flatten the accessibility tree into one short line per useful element."""
+def listed_elements(node, found, show_all, document=None):
+    """Flatten the accessibility tree into one entry per useful element."""
     role = node.get("role") or "?"
     name = node.get("name")
     if role == "webarea" and document is not None and name != document:
@@ -202,9 +201,7 @@ def compact_lines(node, lines, show_all, document=None):
     )
     keep = (ref and interactive and not (role in NOISE_ROLES and not name)) or (show_all and name)
     if keep:
-        parts = []
-        parts.append(f"[{ref.split(':')[1]}]" if ref else "     ")
-        parts.append(role)
+        parts = [role]
         if name:
             parts.append(json.dumps(name[:120], ensure_ascii=False))
         value = node.get("value")
@@ -213,62 +210,183 @@ def compact_lines(node, lines, show_all, document=None):
         states = [s for s in node.get("states", []) if s in ("checked", "selected", "disabled", "expanded", "focused")]
         if states:
             parts.append("(" + ",".join(states) + ")")
-        lines.append(" ".join(parts))
+        found.append({"ad": ref, "role": role, "name": name or "", "line": " ".join(parts),
+                      "bounds": node.get("bounds")})
     for child in node.get("children", []):
-        compact_lines(child, lines, show_all, document)
+        listed_elements(child, found, show_all, document)
 
 
-def observe(env, show_all=False):
+def read_window(env, show_all=False, bounds=False):
+    """The current window and its elements, read now. Returns (window,
+    windows, elements, partial); elements is None, with a reason in its
+    place, when the window cannot be read."""
     window, windows = current_window(env)
+    if window is None:
+        return None, windows, "(no window is visible to the accessibility channel; use `look`)", False
+    args = ["snapshot", "--window-id", window["id"]]
+    if not show_all:
+        args += ["-i", "--compact"]
+    if bounds:
+        args.append("--include-bounds")
+    envelope = ad(env, *args, timeout=40)
+    if not envelope.get("ok"):
+        return window, windows, f"(accessibility channel failed: {ad_error(envelope)}; use `look`)", False
+    data = envelope["data"]
+    found = []
+    listed_elements(data["tree"], found, show_all, visible_document(data["tree"], window.get("title") or ""))
+    return window, windows, found, not data.get("complete", True)
+
+
+def last_observation():
+    try:
+        with open(REFS, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def give_refs(elements, before):
+    """Give each element that can be acted on a ref of our own.
+
+    An element keeps its ref from the observation before when it is still
+    there, which is judged by its role, its name and its place among the
+    elements sharing both. A ref is never given to a second element, so one
+    whose element has gone fails instead of landing somewhere else.
+    """
+    known = {tuple(e["key"]): e["id"] for e in (before or {}).get("elements", [])}
+    number = (before or {}).get("next", 1)
+    seen = {}
+    for element in elements:
+        if not element["ad"]:
+            continue
+        nth = seen.get((element["role"], element["name"]), 0)
+        seen[(element["role"], element["name"])] = nth + 1
+        key = (element["role"], element["name"], nth)
+        if key in known:
+            element["id"] = known[key]
+        else:
+            element["id"] = f"e{number}"
+            number += 1
+        element["key"] = key
+    return number
+
+
+def changes_since(before, window, elements, show_all):
+    """What differs from the observation before, as lines, or None when the
+    two cannot be compared or differ so much that the whole list reads better."""
+    if not before or before.get("window") != window["id"] or before.get("all") != show_all:
+        return None
+    old = {e["id"]: e["line"] for e in before["elements"]}
+    new = {e["id"]: e["line"] for e in elements if e.get("id")}
+    lines = [f"+ [{i}] {line}" for i, line in new.items() if i not in old]
+    lines += [f"~ [{i}] {line}" for i, line in new.items() if i in old and old[i] != line]
+    lines += [f"- [{i}] {line}" for i, line in old.items() if i not in new]
+    if len(lines) > max(12, len(new) // 2):
+        return None
+    return lines
+
+
+def observe(env, show_all=False, brief=False):
+    """Read the current window and remember it as the latest observation.
+    With `brief`, also say what changed since the one before."""
+    window, windows, elements, partial = read_window(env, show_all)
     result = {
         "windows": [
             {"title": w.get("title"), "app": w.get("app_name"), "focused": bool(w.get("is_focused"))}
             for w in windows
         ]
     }
-    if window is None:
-        result.update(a11y=False, text="(no window is visible to the accessibility channel; use `look`)")
+    if not isinstance(elements, list):
+        result.update(a11y=False, text=elements)
         return result
-    args = ["snapshot", "--window-id", window["id"]]
-    if not show_all:
-        args += ["-i", "--compact"]
-    envelope = ad(env, *args, timeout=40)
-    if not envelope.get("ok"):
-        result.update(a11y=False, text=f"(accessibility channel failed: {ad_error(envelope)}; use `look`)")
-        return result
-    data = envelope["data"]
-    with open(LAST_SNAPSHOT, "w") as f:
-        f.write(data["snapshot_id"])
-    lines = []
-    compact_lines(data["tree"], lines, show_all, visible_document(data["tree"], window.get("title") or ""))
-    header = f'window: {window.get("title")} ({window.get("app_name")})'
-    if not data.get("complete", True):
+    before = last_observation()
+    number = give_refs(elements, before)
+    title = window.get("title") or ""
+    with open(REFS, "w", encoding="utf-8") as f:
+        json.dump({"next": number, "window": window["id"], "all": show_all, "title": title,
+                   "elements": [{k: e[k] for k in ("id", "key", "ad", "line")} for e in elements if e.get("id")]},
+                  f, ensure_ascii=False)
+    header = f'window: {title} ({window.get("app_name")})'
+    if partial:
         header += "  [partial]"
+    lines = [(f'[{e["id"]}] ' if e.get("id") else "     ") + e["line"] for e in elements]
     result.update(a11y=True, text="\n".join([header] + lines), elements=len(lines))
+    changes = changes_since(before, window, elements, show_all) if brief else None
+    if changes is not None:
+        if before.get("title") != title:
+            header += f'  [was: {before.get("title")}]'
+        if changes:
+            same = len(lines) - sum(1 for line in changes if line[0] in "+~")
+            summary = f"{len(changes)} changed (+ new, ~ different, - gone); the other {same} elements and their refs are as before"
+        else:
+            summary = f"nothing changed: the same {len(lines)} elements, and their refs, as before"
+        result["brief"] = "\n".join([header, summary] + changes)
     return result
 
 
-def full_ref(short):
-    """Expand "e12" to the qualified ref of the latest observation."""
-    if short.startswith("@"):
-        return short
-    if PINNED_SNAPSHOT:
-        return f"@{PINNED_SNAPSHOT}:{short}"
-    try:
-        with open(LAST_SNAPSHOT) as f:
-            return f"@{f.read().strip()}:{short}"
-    except OSError:
-        raise Fail("no observation yet: run `observe` before using a ref")
-
-
-def bounds_centre(env, ref):
-    envelope = ad(env, "get", ref, "--property", "bounds")
-    if not envelope.get("ok"):
-        raise Fail(f"ref {ref}: {ad_error(envelope)} (refs expire after every action; run `observe` again)")
-    bounds = envelope["data"].get("value")
+def centre(bounds):
     if not bounds:
         return None
     return int(bounds["x"] + bounds["width"] / 2), int(bounds["y"] + bounds["height"] / 2)
+
+
+def target_of(env, req):
+    """The element a request is aimed at, by ref or by name, as a dict:
+    `ad` (its agent-desktop ref), `shown` (how the log names it) and, where
+    already known, `centre`. None for a request aimed at no element."""
+    if "ref" in req:
+        short = req["ref"]
+        if short.startswith("@"):
+            return {"ad": short, "shown": short}
+        seen = last_observation()
+        if seen is None:
+            raise Fail("no observation yet: run `observe` before using a ref")
+        for element in seen["elements"]:
+            if element["id"] == short:
+                return {"ad": element["ad"], "shown": short, "id": short, "all": seen.get("all", False)}
+        raise Fail(f"{short} is not in the window any more; run `observe` for the current refs")
+    if req.get("name"):
+        return find_by_name(env, req["name"])
+    return None
+
+
+def find_by_name(env, wanted):
+    """The one element with this name, read now. The name must match whole,
+    or failing that be contained, without regard to case."""
+    _, _, elements, _ = read_window(env, bounds=True)
+    quoted = json.dumps(wanted, ensure_ascii=False)
+    if not isinstance(elements, list):
+        raise Fail(f"cannot look for {quoted}: {elements}")
+    elements = [e for e in elements if e["ad"]]
+    low = wanted.lower()
+    found = [e for e in elements if e["name"].lower() == low] or [e for e in elements if low in e["name"].lower()]
+    if not found:
+        raise Fail(f"no element is named {quoted}; run `observe` to see the names")
+    if len(found) > 1:
+        some = "; ".join(e["line"] for e in found[:6]) + ("; ..." if len(found) > 6 else "")
+        raise Fail(f"{len(found)} elements are named {quoted} ({some}); run `observe` and use a ref")
+    return {"ad": found[0]["ad"], "shown": quoted, "centre": centre(found[0]["bounds"])}
+
+
+def centre_of(env, target):
+    """Where to click for this element: (x, y), or None when it has no
+    known position."""
+    if "centre" in target:
+        return target["centre"]
+    envelope = ad(env, "get", target["ad"], "--property", "bounds")
+    if envelope.get("ok"):
+        return centre(envelope["data"].get("value"))
+    if envelope.get("error", {}).get("code") == "AMBIGUOUS_TARGET" and target.get("id"):
+        # agent-desktop will not find an element again that looks like its
+        # neighbours (three "Delete" buttons). Our own refs tell them apart
+        # by their order, so read the window again and take that one.
+        _, _, elements, _ = read_window(env, show_all=target["all"], bounds=True)
+        if isinstance(elements, list):
+            give_refs(elements, last_observation())
+            for element in elements:
+                if element.get("id") == target["id"]:
+                    return centre(element["bounds"])
+    raise Fail(f"{target['shown']}: {ad_error(envelope)} (the element may have gone; run `observe`)")
 
 
 # --- pixels ------------------------------------------------------------------
@@ -319,49 +437,71 @@ def after_action(env, summary):
     """Settle, log, and return the fresh observation that every action reports."""
     time.sleep(SETTLE_SECONDS)
     log_event(summary)
-    return {} if IN_BATCH else observe(env)
+    return {} if IN_BATCH else observe(env, brief=True)
 
 
 def cmd_click(env, req):
-    if "ref" in req:
-        ref = full_ref(req["ref"])
-        centre = bounds_centre(env, ref)
-        if centre is None:
+    target = target_of(env, req)
+    shown = target["shown"] if target else ""
+    if target:
+        at = centre_of(env, target)
+        if at is None:
             # No position known (for example GTK4 under some window managers):
             # fall back to the semantic click, without the actionability wait.
-            envelope = ad(env, "click", ref, "--timeout-ms", "0")
+            envelope = ad(env, "click", target["ad"], "--timeout-ms", "0")
             if not envelope.get("ok"):
                 raise Fail(ad_error(envelope))
-            return after_action(env, f'click {req["ref"]} (semantic)')
-        x, y = centre
+            return after_action(env, f"click {shown} (semantic)")
+        x, y = at
     else:
         x, y = int(req["x"]), int(req["y"])
-    args = ["--headed", "mouse-click", "--xy", f"{x},{y}"]
-    if req.get("button"):
-        args += ["--button", req["button"]]
-    if req.get("count"):
-        args += ["--count", str(req["count"])]
-    envelope = ad(env, *args)
+    def press(x, y):
+        args = ["--headed", "mouse-click", "--xy", f"{x},{y}"]
+        if req.get("button"):
+            args += ["--button", req["button"]]
+        if req.get("count"):
+            args += ["--count", str(req["count"])]
+        return ad(env, *args)
+
+    envelope = press(x, y)
+    if not envelope.get("ok") and target and ad(env, "scroll-to", target["ad"]).get("ok"):
+        # Most likely scrolled out of view: bring the element in and look
+        # again for where it is now.
+        time.sleep(SETTLE_SECONDS)
+        if req.get("name"):
+            target = find_by_name(env, req["name"])
+        at = centre_of(env, target)
+        if at is not None:
+            x, y = at
+            envelope = press(x, y)
     if not envelope.get("ok"):
         raise Fail(ad_error(envelope))
-    target = req.get("ref") or ""
-    return after_action(env, f"click {target} at {x},{y}".replace("  ", " "))
+    return after_action(env, f"click {shown} at {x},{y}".replace("  ", " "))
 
 
 def cmd_type(env, req):
     text = req["text"]
-    if "ref" in req:
-        envelope = ad(env, "--headed", "type", full_ref(req["ref"]), text)
-        if not envelope.get("ok"):
+    target = target_of(env, req)
+    shown_target = target["shown"] if target else ""
+    envelope = ad(env, "--headed", "type", target["ad"], text) if target else None
+    if envelope is not None and not envelope.get("ok"):
+        if envelope.get("error", {}).get("code") != "AMBIGUOUS_TARGET":
             raise Fail(ad_error(envelope))
-    else:
+        # An element agent-desktop cannot tell from its neighbours: put the
+        # keyboard focus on it with a click, then paste as below.
+        at = centre_of(env, target)
+        click = ad(env, "--headed", "mouse-click", "--xy", f"{at[0]},{at[1]}") if at else envelope
+        if not click.get("ok"):
+            raise Fail(ad_error(click))
+        envelope = None
+    if envelope is None:
         # No target element: paste into whatever has keyboard focus.
         for args in (["clipboard-set", text], ["press", "ctrl+v"]):
             envelope = ad(env, *args)
             if not envelope.get("ok"):
                 raise Fail(ad_error(envelope))
     shown = text if len(text) <= 40 else text[:37] + "..."
-    return after_action(env, f'type {req.get("ref", "")} {json.dumps(shown, ensure_ascii=False)}'.replace("  ", " "))
+    return after_action(env, f"type {shown_target} {json.dumps(shown, ensure_ascii=False)}".replace("  ", " "))
 
 
 def cmd_key(env, req):
@@ -373,9 +513,10 @@ def cmd_key(env, req):
 
 
 def cmd_scroll(env, req):
-    if "ref" in req:
-        envelope = ad(env, "scroll-to", full_ref(req["ref"]))
-        summary = f'scroll to {req["ref"]}'
+    target = target_of(env, req)
+    if target:
+        envelope = ad(env, "scroll-to", target["ad"])
+        summary = f"scroll to {target['shown']}"
     else:
         args = ["--headed", "mouse-wheel", "--x", str(req.get("x", 640)), "--y", str(req.get("y", 400)),
                 f'--dy={req.get("dy", -5)}']
@@ -456,7 +597,144 @@ def window_strings(env):
             walk(child)
 
     walk(tree)
+    # Running text, which the tree above does not carry.
+    found += read_text(env, title) or []
     return title, found
+
+
+# Elements whose content reads as one line of text.
+ONE_LINE_ROLES = {"paragraph", "heading", "link", "button", "listitem", "cell", "label", "caption", "menuitem", "tab"}
+
+
+def text_lines(node, document=None):
+    """What a person would read in this part of the tree, top to bottom.
+
+    A name is left out when the text under its element already says it, as
+    with a link and the words inside it.
+    """
+    role = node.get("role") or ""
+    if role == "webarea" and document is not None and node.get("name") != document:
+        return []  # a hidden document
+    below = []
+    for child in node.get("children", []):
+        below += text_lines(child, document)
+    if role in ONE_LINE_ROLES and below:
+        below = [" ".join(below)]
+    squeeze = lambda text: "".join(str(text).split()).lower()
+    name, value = node.get("name"), node.get("value")
+    said = squeeze(" ".join(below))
+    own = []
+    if name and squeeze(name) not in said:
+        own.append(" ".join(str(name).split()))
+    if value not in (None, "") and squeeze(value) not in said and squeeze(value) != squeeze(name or ""):
+        own.append(" ".join(str(value).split()))
+    if own and role in ONE_LINE_ROLES and below:
+        return [": ".join(own) + " " + below[0]]
+    return ([": ".join(own)] if own else []) + below
+
+
+EMBEDDED = chr(0xFFFC)  # stands for a child element inside a text
+NO_TEXT_PACKAGES = "python3-gi gir1.2-atspi-2.0"
+
+
+def read_text(env, title):
+    """The text of the window with this title as a person reads it, read
+    from the accessibility bus itself: agent-desktop reports elements, not
+    the running text of paragraphs. Returns lines, or None where the host
+    lacks the Python bindings for it."""
+    os.environ.update(env)
+    try:
+        import gi
+        gi.require_version("Atspi", "2.0")
+        from gi.repository import Atspi
+    except (ImportError, ValueError):
+        return None
+
+    def showing(node):
+        return node.get_state_set().contains(Atspi.StateType.SHOWING)
+
+    def children(node):
+        found = (node.get_child_at_index(i) for i in range(node.get_child_count()))
+        return [child for child in found if child is not None]
+
+    def own_text(node):
+        try:
+            iface = node.get_text_iface()
+            if iface is None:
+                return None
+            return Atspi.Text.get_text(iface, 0, Atspi.Text.get_character_count(iface))
+        except Exception:
+            return None
+
+    def lines_of(node):
+        # Visible, not showing: what is scrolled out of view belongs to the text.
+        if not node.get_state_set().contains(Atspi.StateType.VISIBLE):
+            return []
+        role = node.get_role_name()
+        text = own_text(node)
+        kids = children(node)
+        if role in ("entry", "password text", "spin button"):
+            return ["[" + ("*" * len(text or "") if role == "password text" else (text or "")) + "]"]
+        if text and text.replace(EMBEDDED, "").strip():
+            # Running text with its children in place, as one line.
+            pieces = text.split(EMBEDDED)
+            parts = [pieces[0]]
+            for index, piece in enumerate(pieces[1:]):
+                if index < len(kids):
+                    parts.append(" ".join(lines_of(kids[index])))
+                parts.append(piece)
+            return [" ".join("".join(parts).split())]
+        below = []
+        for child in kids:
+            below += lines_of(child)
+        if role in ("table row", "list item") and below:
+            return [" | ".join(below) if role == "table row" else " ".join(below)]
+        if not below and node.get_name():
+            return [" ".join(node.get_name().split())]
+        return below
+
+    def find(node, wanted, depth):
+        if wanted(node):
+            return node
+        if depth == 0:
+            return None
+        for child in children(node):
+            hit = find(child, wanted, depth - 1)
+            if hit is not None:
+                return hit
+        return None
+
+    try:
+        desktop = Atspi.get_desktop(0)
+        window = find(desktop, lambda n: n.get_role_name() in ("frame", "dialog", "window")
+                      and n.get_name() == title and showing(n), 2)
+        if window is None:
+            return None
+        # In a browser, the page is what is wanted, not the toolbars around it.
+        page = find(window, lambda n: n.get_role_name() == "document web" and showing(n), 12)
+        return [line for line in lines_of(page or window) if line]
+    except Exception:
+        return None
+
+
+def cmd_text(env, req):
+    """The text of the current window, without refs: for reading a page."""
+    window, _ = current_window(env)
+    if window is None:
+        raise Fail("no window is visible to the accessibility channel; use `look`")
+    title = window.get("title") or ""
+    result = {"title": title, "app": window.get("app_name")}
+    lines = read_text(env, title)
+    if lines is None:
+        envelope = ad(env, "snapshot", "--window-id", window["id"], timeout=40)
+        if not envelope.get("ok"):
+            raise Fail(f"accessibility channel failed: {ad_error(envelope)}; use `look`")
+        tree = envelope["data"]["tree"]
+        lines = [line for line in text_lines(tree, visible_document(tree, title)) if line]
+        result["note"] = ("only the names of elements: running text such as paragraphs is missing, "
+                          f"because the host lacks the packages {NO_TEXT_PACKAGES}")
+    result.update(text="\n".join(lines), lines=len(lines))
+    return result
 
 
 def cmd_wait(env, req):
@@ -489,7 +767,7 @@ def cmd_wait(env, req):
         waited = time.time() - started
         if not unmet:
             log_event(f"{summary} ({waited:.1f} s)")
-            result = {} if IN_BATCH else observe(env)
+            result = {} if IN_BATCH else observe(env, brief=True)
             result["waited"] = round(waited, 1)
             return result
         if waited >= timeout:
@@ -502,16 +780,12 @@ def cmd_wait(env, req):
 def cmd_do(env, req):
     """Several steps in one request, with one observation at the end.
 
-    Refs in the steps belong to the observation the caller last saw, so they
-    are resolved against that one throughout, whatever the steps change.
+    Nothing observes while the steps run, so their refs are the ones of the
+    observation the caller last saw, whatever the steps change. A step aimed
+    at a name looks for it when its turn comes.
     """
-    global PINNED_SNAPSHOT, IN_BATCH
+    global IN_BATCH
     steps = req.get("steps") or []
-    try:
-        with open(LAST_SNAPSHOT) as f:
-            PINNED_SNAPSHOT = f.read().strip() or None
-    except OSError:
-        PINNED_SNAPSHOT = None
     IN_BATCH = True
     table = {"click": cmd_click, "type": cmd_type, "key": cmd_key, "scroll": cmd_scroll,
              "drag": cmd_drag, "wait": cmd_wait}
@@ -525,8 +799,8 @@ def cmd_do(env, req):
                 raise Fail(f'step {number} of {len(steps)} ({step.get("cmd")}) failed: {error}. '
                            f"{number - 1} step(s) before it were done; run `observe` to see where things stand")
     finally:
-        PINNED_SNAPSHOT, IN_BATCH = None, False
-    result = observe(env)
+        IN_BATCH = False
+    result = observe(env, brief=True)
     result["steps"] = len(steps)
     return result
 
@@ -695,7 +969,7 @@ def handle(req):
                             for w in list_windows(env)]}
     table = {"click": cmd_click, "type": cmd_type, "key": cmd_key, "scroll": cmd_scroll,
              "launch": cmd_launch, "drag": cmd_drag, "look": cmd_look, "frame": cmd_frame, "input": cmd_input,
-             "wait": cmd_wait, "do": cmd_do}
+             "wait": cmd_wait, "do": cmd_do, "text": cmd_text}
     if cmd not in table:
         raise Fail(f"unknown command: {cmd}")
     return table[cmd](env, req)

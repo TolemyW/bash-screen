@@ -264,7 +264,7 @@ pub fn step_res(current: u32, sharper: bool) -> u32 {
         .iter()
         .filter(|&&level| rank(level) < rank(current))
         .count();
-    let exact = RES_LEVELS.iter().any(|&level| level == current);
+    let exact = RES_LEVELS.contains(&current);
     let next = match (sharper, exact) {
         (true, true) => position + 1,
         (true, false) => position,

@@ -31,9 +31,11 @@ https://github.com/TolemyW/bash-screen#quick-start.
 bash-screen launch -- firefox https://example.org
 bash-screen observe            # elements of the current window, each with a ref like e12
 bash-screen click e12          # or a screen position: bash-screen click 640,400
-bash-screen type --ref e7 hello
+bash-screen click --name Save  # or the one element with that name
+bash-screen type --ref e7 hello          # or: bash-screen type --name Email hello
 bash-screen key ctrl+l         # several in order: bash-screen key ctrl+l return
 bash-screen scroll --dy -5     # negative is down; --ref e40 scrolls an element into view
+bash-screen text               # the text of the page, to read it
 bash-screen look               # screenshot saved locally as PNG; prints the path
 ```
 
@@ -50,6 +52,9 @@ bash-screen do click e7 then type "Ada" then key tab then type "ada@example.org"
   usual and separated by the bare word `then`.
 - Refs in every step are the ones from the observation you last saw, even
   though earlier steps change the window.
+- A step with `--name` looks for the element when its turn comes, so it can
+  aim at something an earlier step brings up:
+  `bash-screen do click e7 then click --name "Confirm"`.
 - If a step fails, the later ones are not run and the error names the step.
   Run `observe` to see where things stand.
 - Stop the batch where you need to read something before deciding.
@@ -73,11 +78,22 @@ the plain `wait` works.
 
 ## Rules that matter
 
-- Every action prints a fresh observation. Read it instead of calling
-  `observe` again.
-- A ref is valid only for the latest observation. After any action, use the
-  refs from the new output, never old ones.
-- Prefer refs. Use positions when the element you need has no ref.
+- Every action prints what it changed in the window: `+` an element that is
+  new, `~` one that reads differently now, `-` one that has gone. Everything
+  else is as in the list you already have. When much changed, the whole list
+  is printed instead. Read this instead of calling `observe` again.
+- A ref stays with its element for as long as the element is in the window,
+  so refs from earlier output remain good. A ref whose element has gone
+  fails; it never lands on another element.
+- Elements that read the same, such as a `Delete` button in every row, are
+  told apart by their order. When one of them goes, the refs of those after
+  it move up by one; `observe` to see which is which.
+- `--name` takes the whole name or a part of it, in any case. It fails when
+  several elements match, and lists them; use a ref then.
+- Prefer refs or names. Use positions when the element you need has neither.
+- To read what a page says, use `text`, not `observe --all`. In a browser it
+  prints only the page: paragraphs as lines, table rows with `|` between
+  cells, and the content of an input in `[ ]`.
 - Positions are screen pixels, the same as in a `look` image at scale 1.
 - `observe` lists interactive elements. Add `--all` for headings and text.
 - When the list does not tell you enough, run `look` and read the PNG.
