@@ -43,6 +43,76 @@ agent-desktop) is unpacked into the remote directory without root.
 `config`, `setup` and `start`. Finished steps are skipped when it runs again.
 `--remote-dir` and `--geometry` change the defaults.
 
+## Waiting and batches
+
+`bash-screen wait` returns an observation once its conditions hold:
+
+| Option | Holds when |
+|---|---|
+| `--text <text>` | The name or value of some element in the current window contains the text |
+| `--gone <text>` | No element contains the text |
+| `--title <text>` | The title of the current window contains the text |
+| `--stable` | Two screenshots taken half a second apart are identical |
+| `--timeout <seconds>` | Not a condition: how long to wait, 15 by default and 300 at most |
+
+- Several conditions can be given; all must hold at the same check.
+- Without a condition, `wait` behaves as `--stable`.
+- Text is compared without regard to case, and as part of a longer string:
+  `--gone Save` keeps waiting while an element reads `Saved`.
+- The window is checked every half second. A check of a large window can
+  take longer than that by itself.
+- On a timeout the command fails and says which conditions were not met and
+  what the window is titled.
+- `--text` and `--gone` read the window's elements, so they are of no use
+  with an app started with `launch --no-a11y`. `--stable` is. A page that never
+  stops moving, such as one with a blinking caret or a clock, never becomes
+  stable.
+
+`bash-screen do` sends several steps as one request and observes once at the
+end:
+
+```sh
+bash-screen do click e7 then type "Ada" then key tab return then wait --text Saved
+```
+
+- The steps are `click`, `type`, `key`, `scroll`, `drag` and `wait`, with
+  their usual arguments. Other commands are rejected before anything is sent.
+- Steps are separated by the word `then` on its own. The single word `then`
+  can therefore not be typed in a batch; text that only contains it can.
+- Refs are resolved against the observation made before the batch, for every
+  step, so a ref stays usable after earlier steps have changed the window. A
+  ref to an element that has since disappeared fails.
+- A failing step ends the batch. The error names the step and says how many
+  were done before it; nothing is undone.
+- With `--json`, the reply has `steps`, the number of steps that ran. The
+  reply of `wait` has `waited`, in seconds.
+
+## Input from a viewer
+
+`bash-screen input` is for a program that shows the screen to a person, such
+as the [Herdr app mod](../herdr-app/RECIPE.md). It is not listed by `--help`
+and is not meant for an agent: it injects the actions and returns at once,
+without the observation that `click`, `type` and `key` print.
+
+```sh
+bash-screen input '[{"kind":"click","x":640,"y":400},{"kind":"text","text":"hi"},{"kind":"key","key":"return"}]'
+```
+
+The argument is a JSON list. Each action has a `kind`:
+
+| `kind` | Other fields | Effect |
+|---|---|---|
+| `click` | `x`, `y`, optional `button` (`left` by default) | A click at that screen position |
+| `wheel` | `x`, `y`, `dy` | Turns the wheel at that position; negative is down |
+| `text` | `text` | Pastes the text at the keyboard focus, replacing the remote clipboard |
+| `key` | `key` | A key or combination, as for `bash-screen key` |
+
+- The actions run in order in one round trip. The first one that fails ends
+  the call; the ones before it stay done.
+- The reply is the number of actions done, as `done` with `--json`.
+- Each action appears in the action log marked `you:`.
+- It does not open the preview pane.
+
 ## Preview
 
 The preview pane follows the session its calling pane last used. In the Herdr
