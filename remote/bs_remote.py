@@ -28,7 +28,7 @@ import subprocess
 import sys
 import time
 
-VERSION = "0.5.0"
+VERSION = "0.5.1"
 BASE = os.path.dirname(os.path.abspath(__file__))
 SESSION_SH = os.path.join(BASE, "session.sh")
 SESSIONS = os.path.join(BASE, "sessions")
