@@ -18,6 +18,8 @@ const INTERVAL_MS = 1500;
 // How long a newly saved picture stays behind the old one before the two swap,
 // so that the app has reloaded it by the time it is seen.
 const SWAP_MS = 500; // measured: the app shows a saved picture 0.2 to 0.45 s later
+// How long the mark of a press stays after its outcome is known.
+const MARK_MS = 900;
 const WHEEL_STEP = 40; // pixels of wheel travel for one notch on the remote side
 
 // Takes a screenshot and publishes it only when it differs from the last one.
@@ -45,7 +47,9 @@ export default class Screen extends View {
   init(_props, cx) {
     this.id = localStorage.getItem("id") ?? Math.random().toString(36).slice(2, 10);
     localStorage.setItem("id", this.id);
-    this.mark = null; // where the last press landed, in the picture's own pixels, until the screen answers
+    // Where the last press landed, in the picture's own pixels: { x, y, state }.
+    // "waiting" until the screen answers, then "changed" or "unchanged" for a moment.
+    this.mark = null;
     this.pressed = null; // { at, what, sent }: timing of the action the person is waiting on
     this.size = null; // of this pane, logical pixels
     this.screen = null; // of the remote display, [width, height]
@@ -152,12 +156,20 @@ export default class Screen extends View {
   }
 
   // The action the person was waiting on has shown its result (or never will):
-  // drop the mark, put the time it took in the header, and keep it in the log.
+  // colour the mark by the outcome, put the time it took in the header, and keep it in the log.
   answered(changed, cx) {
     const p = this.pressed;
     if (!p) return;
     this.pressed = null;
-    this.mark = null;
+    const mark = this.mark;
+    if (mark) {
+      mark.state = changed ? "changed" : "unchanged";
+      cx.timer.after(MARK_MS, (cx) => {
+        if (this.mark !== mark) return; // a later press has its own mark
+        this.mark = null;
+        cx.notify();
+      });
+    }
     const now = Date.now();
     const total = ((now - p.at) / 1000).toFixed(1);
     if (changed) this.note = `${p.what} · ${total} s`;
@@ -217,7 +229,7 @@ export default class Screen extends View {
     const x = Math.round((point.x / shown.width) * this.screen[0]);
     const y = Math.round((point.y / shown.height) * this.screen[1]);
     if (x < 0 || y < 0 || x >= this.screen[0] || y >= this.screen[1]) return;
-    this.mark = { x: point.x, y: point.y };
+    this.mark = { x: point.x, y: point.y, state: "waiting" };
     this.pressed = { at: Date.now(), what: `click ${x},${y}`, sent: null };
     cx.notify();
     this.send({ kind: "click", x, y }, cx);
@@ -351,6 +363,16 @@ export default class Screen extends View {
       .child(text);
   }
 
+  // The mark of a press: pulsing in the accent colour while the screen has not
+  // answered, then steady in `done` when the picture changed and in `blocked` when it did not.
+  ring(mark, t) {
+    const ring = div().absolute().left(mark.x - 7).top(mark.y - 7).w(14).h(14).rounded(7).border(2);
+    if (mark.state === "waiting") {
+      return ring.border_color(t.accent).loop("opacity", { from: 0.35, to: 1, period: 600 });
+    }
+    return ring.border_color(mark.state === "changed" ? t.done : t.blocked);
+  }
+
   render(_cx) {
     const t = theme();
     const shown = this.shown();
@@ -384,9 +406,7 @@ export default class Screen extends View {
         .on_scroll_wheel((event, cx) => this.turn(event, shown, cx))
         .child(layer(back))
         .child(layer(this.front))
-        .when(Boolean(this.mark), (el) => el.child(
-          div().absolute().left(this.mark.x - 7).top(this.mark.y - 7).w(14).h(14).rounded(7)
-            .border(2).border_color(t.accent).loop("opacity", { from: 0.35, to: 1, period: 600 })));
+        .when(Boolean(this.mark), (el) => el.child(this.ring(this.mark, t)));
     } else {
       body = div().p(12).text_size(12).text_color(this.error ? t.blocked : t.dim)
         .child(this.error ?? "Waiting for the first picture …");

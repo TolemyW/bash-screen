@@ -20,6 +20,7 @@ A pane that shows the screen of a remote Linux machine, the one a coding agent i
 - Every 1.5 s the mod takes a screenshot. When the screen has not changed, nothing is redrawn.
 - A changed picture replaces the old one without a blank moment in between.
 - A left press on the picture clicks that point on the remote screen and gives the pane the keyboard.
+- The press leaves a 14 px ring at that point. It pulses in `accent` until the outcome is known, then stays for 0.9 s in `done` when the picture changed after the click, or in `blocked` when it did not or the click could not be sent.
 - With the keyboard on the pane, typed characters are typed remotely; Enter, Backspace, Escape, Tab, Delete, the arrows, Home, End, Page Up and Page Down, and combinations with Ctrl and Alt are sent as keys. Combinations with Cmd are left to the app.
 - The wheel over the picture turns the remote wheel, one notch per 40 px of travel.
 - Actions go out in order, each batch in one call. Whatever is done while a call is on its way goes out together in the next. After a batch the mod looks again at once and three more times 0.3 s apart, so the answer shows without waiting for the timer.
