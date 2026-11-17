@@ -728,7 +728,16 @@ def cmd_text(env, req):
         if not envelope.get("ok"):
             raise Fail(f"accessibility channel failed: {ad_error(envelope)}; use `look`")
         tree = envelope["data"]["tree"]
-        lines = [line for line in text_lines(tree, visible_document(tree, title)) if line]
+        document = visible_document(tree, title)
+
+        def page(node):
+            if node.get("role") == "webarea" and node.get("name") == document:
+                return node
+            return next(filter(None, map(page, node.get("children", []))), None)
+
+        # In a browser, the page only, as above.
+        start = (page(tree) if document is not None else None) or tree
+        lines = [line for line in text_lines(start, document) if line]
         result["note"] = ("only the names of elements: running text such as paragraphs is missing, "
                           f"because the host lacks the packages {NO_TEXT_PACKAGES}")
     result.update(text="\n".join(lines), lines=len(lines))

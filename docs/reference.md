@@ -34,6 +34,7 @@ The host must already have these packages:
 - `dbus`, `at-spi2-core`, `xauth`, `x11-xkb-utils`
 - Python 3 with Pillow
 - on Ubuntu 22.04 also `xkb-data`, which any host with a desktop has
+- optionally `python3-gi` and `gir1.2-atspi-2.0`, for [reading text](#reading-text)
 
 `init` checks for them and prints the `apt-get install` command an
 administrator should run if any are missing. Everything else (Xvnc, openbox,
@@ -100,8 +101,8 @@ browser it prints only the page, not the toolbars.
   only scrolled out of view is included.
 
 This reads the accessibility bus directly and needs two more packages on the
-host, `python3-gi` and `gir1.2-atspi-2.0`. `init` does not ask for them.
-Without them `text` prints the names of the elements only, says so, and
+host, `python3-gi` and `gir1.2-atspi-2.0`. `init` works without them and
+names them as optional when they are absent. Without them `text` prints the names of the elements only, says so, and
 leaves out running text such as paragraphs; `wait --text` and `wait --gone`
 then do not see that text either.
 

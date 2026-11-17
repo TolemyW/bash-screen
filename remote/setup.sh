@@ -34,6 +34,14 @@ check mcookie util-linux
 check xkbcomp x11-xkb-utils
 if [ -x /usr/libexec/at-spi-bus-launcher ]; then say "  ok       at-spi bus"; else say "  MISSING  at-spi bus"; needs_admin+=(at-spi2-core); fi
 if python3 -c 'import PIL' >/dev/null 2>&1; then say "  ok       python Pillow"; else say "  MISSING  python Pillow"; needs_admin+=(python3-pil); fi
+# Wanted for reading text only, and never a reason for setup to fail.
+optional=()
+if python3 -c 'import gi; gi.require_version("Atspi", "2.0"); from gi.repository import Atspi' >/dev/null 2>&1; then
+  say "  ok       python Atspi bindings"
+else
+  say "  absent   python Atspi bindings (optional, for reading page text)"
+  optional+=(python3-gi gir1.2-atspi-2.0)
+fi
 
 if ! command -v apt-get >/dev/null 2>&1 || ! command -v dpkg >/dev/null 2>&1; then
   say ""
@@ -189,6 +197,11 @@ step "Result"
 if [ "${#needs_admin[@]}" -gt 0 ]; then
   say "An administrator needs to install these packages:"
   say "  sudo apt-get install ${needs_admin[*]}"
+fi
+if [ "${#optional[@]}" -gt 0 ]; then
+  say "Optional: \`bash-screen text\` and \`wait --text\` see the running text of a page,"
+  say "such as paragraphs, only with these packages:"
+  say "  sudo apt-get install ${optional[*]}"
 fi
 for problem in ${problems[@]+"${problems[@]}"}; do
   say "Problem: $problem"
