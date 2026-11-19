@@ -139,15 +139,18 @@ terminal is this one instead of the terminal preview, and it follows the
 session that terminal last used. No second pane is opened while one already
 shows that session.
 
-- A click on the picture clicks there on the remote screen and gives the pane
-  the keyboard. Typed text, Enter, the arrows and combinations with Ctrl or
-  Alt then go to the remote screen, and the wheel scrolls it.
+- The pane only shows the screen until you press `Take over`. Then a click on
+  the picture clicks there on the remote screen and gives the pane the
+  keyboard. Typed text, Enter, the arrows and combinations with Ctrl or Alt
+  then go to the remote screen, and the wheel scrolls it. `Hand back` or
+  `Ctrl+]` ends it.
 - The header shows what the last action did and how long the picture took to
   answer, usually about a second.
 - The most recent actions, the agent's and yours, are listed in the room the
   picture leaves: under it, or beside it in a wide pane.
 - `1:2` / `1:1` switches between half-size and full-size pictures.
-- `Take over` opens an SSH tunnel for a VNC client and keeps it until `Stop`.
+- While taken over, `VNC` opens an SSH tunnel for a VNC client and keeps it
+  until `Hand back`.
 - Another host or session: add `"props":{"host":"other-host","session":"research"}`
   to the `pane.split` arguments.
 

@@ -73,7 +73,10 @@ export default class Screen extends View {
     this.wheel = 0;
     this.burst = 0; // extra looks still owed after an action
     this.starting = false;
-    this.tunnel = parse(localStorage.getItem("tunnel") ?? ""); // { pid, port } while taken over
+    this.tunnel = parse(localStorage.getItem("tunnel") ?? ""); // { pid, port } while a VNC tunnel is open
+    // Whether the person's clicks, keys and wheel go to the remote screen. Until
+    // they press Take over the pane only shows it, as the terminal preview does.
+    this.control = Boolean(this.tunnel);
     this.scale = localStorage.getItem("scale") === "1" ? "1" : "0.5";
     this.handle = cx.focus_handle();
     if (checking()) return;
@@ -259,6 +262,11 @@ export default class Screen extends View {
 
   press(point, shown, cx) {
     this.handle.focus();
+    if (!this.control) {
+      this.note = "view only: press Take over to use the screen";
+      cx.notify();
+      return;
+    }
     if (!this.screen || !point) return;
     const x = Math.round((point.x / shown.width) * this.screen[0]);
     const y = Math.round((point.y / shown.height) * this.screen[1]);
@@ -271,7 +279,11 @@ export default class Screen extends View {
 
   key(event, cx) {
     const m = event.modifiers;
-    if (m.platform) return; // the app's own shortcuts
+    if (m.platform || !this.control) return; // the app's own shortcuts, or only watching
+    if (m.control && event.key === "]") { // as in the terminal preview
+      this.handBack(cx);
+      return;
+    }
     const name = NAMED[event.key];
     if (!name && !m.control && !m.alt && event.key_char) {
       this.send({ kind: "text", text: event.key_char }, cx);
@@ -285,7 +297,7 @@ export default class Screen extends View {
 
   turn(event, shown, cx) {
     const at = event.local_position;
-    if (!this.screen || !at) return;
+    if (!this.control || !this.screen || !at) return;
     this.wheel += event.delta.y;
     const notches = Math.trunc(this.wheel / WHEEL_STEP);
     if (!notches) return;
@@ -307,14 +319,32 @@ export default class Screen extends View {
     });
   }
 
-  // Taking over: an SSH tunnel to the session's VNC socket, kept running until Stop.
+  // Taking over: clicks, keys and the wheel on the pane go to the remote screen
+  // until Hand back.
   takeOver(cx) {
+    this.control = true;
+    this.handle.focus();
+    this.note = "your clicks and keys go to the screen; Ctrl+] hands it back";
+    cx.notify();
+  }
+
+  handBack(cx) {
+    this.control = false;
+    this.note = "handed back";
+    this.mark = null;
+    if (this.tunnel) this.stopTunnel(cx);
+    cx.notify();
+  }
+
+  // While taken over, the screen can also go to a VNC client: an SSH tunnel to
+  // the session's VNC socket, kept running until Hand back.
+  openTunnel(cx) {
     if (this.tunnel || this.starting) return;
     this.starting = true;
     this.note = "opening the tunnel …";
     cx.notify();
     cx.spawn(async (cx) => {
-      let problem = "take over: failed";
+      let problem = "VNC: failed";
       try {
         const r = await this.cli(["vnc"], { timeout: 20000 });
         const words = r.stdout.split("\n")[0].trim().split(" ");
@@ -329,39 +359,37 @@ export default class Screen extends View {
             cx.write_to_clipboard(`localhost:${port}`);
             this.note = "";
             notify({
-              title: `Taking over ${this.label()}`,
-              body: `The screen is on localhost:${port} for a VNC client (no password). The address is on the clipboard. Press Stop in the pane when you are done.`,
+              title: `VNC for ${this.label()}`,
+              body: `The screen is on localhost:${port} for a VNC client (no password). The address is on the clipboard. Press Hand back in the pane when you are done.`,
               timeout: 12000,
             });
             problem = null;
           } else {
-            problem = `take over: the tunnel did not start (is port ${port} in use?)`;
+            problem = `VNC: the tunnel did not start (is port ${port} in use?)`;
           }
         } else if (r.stderr.trim()) {
-          problem = `take over: ${r.stderr.trim()}`;
+          problem = `VNC: ${r.stderr.trim()}`;
         }
       } catch (_e) {
-        problem = "take over: failed";
+        problem = "VNC: failed";
       }
       if (problem) {
         this.note = problem;
-        notify({ title: "Take over failed", body: problem, level: "error" });
+        notify({ title: "No VNC tunnel", body: problem, level: "error" });
       }
       this.starting = false;
       cx.notify();
     });
   }
 
-  stopTakeOver(cx) {
+  stopTunnel(cx) {
     const tunnel = this.tunnel;
     if (!tunnel) return;
     this.tunnel = null;
     localStorage.removeItem("tunnel");
-    this.note = "take-over ended";
-    cx.notify();
     cx.spawn(async (_cx) => {
       await exec("kill", [String(tunnel.pid)]);
-      notify({ title: "Take-over ended", body: `The tunnel on localhost:${tunnel.port} is closed.`, timeout: 5000 });
+      notify({ title: "VNC tunnel closed", body: `The tunnel on localhost:${tunnel.port} is closed.`, timeout: 5000 });
     });
   }
 
@@ -434,20 +462,24 @@ export default class Screen extends View {
 
     // Taking over changes the header in place, in colour and content, so that
     // the picture under it stays where it is.
-    const over = this.tunnel;
+    const over = this.control;
+    const tunnel = this.tunnel;
+    const where = tunnel ? `${this.label()} · VNC on localhost:${tunnel.port}, no password` : this.label();
     const header = h_flex().h(HEADER).flex_none().px(8).gap(6).items_center().text_size(12)
       .bg(over ? t.selected : t.chrome).text_color(over ? t.foreground : t.muted)
-      .child(div().text_color(t.foreground).when(Boolean(over), (el) => el.font_semibold())
+      .child(div().text_color(t.foreground).when(over, (el) => el.font_semibold())
         .child(over ? "Taken over" : "bash-screen"))
-      .child(div().truncate().child(over ? `VNC on localhost:${over.port}, no password` : this.label()))
+      .child(div().truncate().child(where))
       .child(div().flex_1().truncate().text_color(over ? t.muted : t.dim).child(this.note))
+      .child(div().text_color(this.error ? t.blocked : over ? t.muted : t.dim).child(status))
+      .child(this.button("scale", this.scale === "1" ? "1:1" : "1:2", t, (cx) => this.toggleScale(cx)))
       .when(!over, (el) => el
-        .child(div().text_color(this.error ? t.blocked : t.dim).child(status))
-        .child(this.button("scale", this.scale === "1" ? "1:1" : "1:2", t, (cx) => this.toggleScale(cx)))
         .child(this.button("takeover", "Take over", t, (cx) => this.takeOver(cx))))
-      .when(Boolean(over), (el) => el
-        .child(this.button("viewer", "Open viewer", t, (cx) => this.openViewer(cx)).text_color(t.foreground))
-        .child(this.button("stop", "Stop", t, (cx) => this.stopTakeOver(cx)).text_color(t.foreground)));
+      .when(over, (el) => el
+        .child(tunnel
+          ? this.button("viewer", "Open viewer", t, (cx) => this.openViewer(cx)).text_color(t.foreground)
+          : this.button("vnc", "VNC", t, (cx) => this.openTunnel(cx)).text_color(t.foreground))
+        .child(this.button("handback", "Hand back", t, (cx) => this.handBack(cx)).text_color(t.foreground)));
 
     let body;
     if (this.front && shown) {

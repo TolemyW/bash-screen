@@ -12,7 +12,7 @@ A pane that shows the screen of a remote Linux machine, the one a coding agent i
   - What the last action did (`click 640,400`, `type 5 chars`, `key ctrl+l`), in `dim`, taking the free space and truncated.
   - The remote screen's size (`1280×800`) in `dim`; `connecting …` before the first picture; `not connected` in `blocked` when the CLI fails.
   - Two text buttons, `muted`, `raised` background on hover: `1:2` / `1:1` and `Take over`.
-- **Header while taken over**: the same 26 px row, so the picture does not move. `selected` background; `Taken over` in semibold, `VNC on localhost:<port>, no password`, the last action, and the buttons `Open viewer` and `Stop` in place of the size and the two usual buttons.
+- **Header while taken over**: the same 26 px row, so the picture does not move. `selected` background, text in `foreground`; `Taken over` in semibold in place of `bash-screen`, the host and session followed by `· VNC on localhost:<port>, no password` while a tunnel is open, the last action, the size, `1:2` / `1:1`, then `VNC` (or `Open viewer` while a tunnel is open) and `Hand back` in place of `Take over`.
 - **Picture**, under the header: the remote screen, as large as fits with its proportions kept, centred horizontally and aligned to the top. Before the first picture: `Waiting for the first picture …` in `dim`; on failure, the CLI's error text in `blocked`.
 - **Log**: the most recent actions on that screen, the agent's and the person's, oldest first, 12 px text in rows of 18 px. Each row is the action's number in `dim`, 36 px wide, then what it did in `muted`, truncated; a failed action is in `blocked`. The picture is sized first and the log takes what is left: under the picture and as wide as it when at least one row fits there, as many rows as fit; otherwise in a column to the right of the picture, which then sits at the left edge, when at least 200 px are free there, with as many rows as its height holds; otherwise not at all. At most 60 rows, the number the CLI sends.
 
@@ -20,13 +20,14 @@ A pane that shows the screen of a remote Linux machine, the one a coding agent i
 
 - Every 1.5 s the mod takes a screenshot. When the screen has not changed, nothing is redrawn.
 - A changed picture replaces the old one without a blank moment in between.
-- A left press on the picture clicks that point on the remote screen and gives the pane the keyboard.
+- Until the person presses `Take over`, the pane only watches: a press on the picture gives the pane the keyboard and says `view only: press Take over to use the screen` in the header; keys and the wheel do nothing.
+- `Take over` puts the header in its taken-over form. From then on a left press on the picture clicks that point on the remote screen and gives the pane the keyboard. `Hand back`, or Ctrl+] as in the terminal preview, ends it and closes any tunnel. A reload of the mod starts watching again, unless a tunnel is still open.
 - The press leaves a 14 px ring at that point. It pulses in `accent` until the outcome is known, then stays for 0.9 s in `done` when the picture changed after the click, or in `blocked` when it did not or the click could not be sent.
 - With the keyboard on the pane, typed characters are typed remotely; Enter, Backspace, Escape, Tab, Delete, the arrows, Home, End, Page Up and Page Down, and combinations with Ctrl and Alt are sent as keys. Combinations with Cmd are left to the app.
 - The wheel over the picture turns the remote wheel, one notch per 40 px of travel.
 - Actions go out in order, each batch in one call. Whatever is done while a call is on its way goes out together in the next. After a batch the mod looks again at once and three more times 0.3 s apart, so the answer shows without waiting for the timer.
 - `1:2` / `1:1` switches between half-size and full-size screenshots; the choice is remembered per pane.
-- `Take over` opens an SSH tunnel to the session's VNC socket and keeps it open. A notification says so, the address goes to the clipboard, and the header stays in its taken-over form until `Stop`, which closes the tunnel and says so in another notification. `Open viewer` opens `vnc://localhost:<port>` with the system's viewer. Closing the pane closes the tunnel; a reload of the mod keeps it.
+- While taken over, `VNC` opens an SSH tunnel to the session's VNC socket and keeps it open until `Hand back`. A notification says so, the address goes to the clipboard, and `Hand back` closes the tunnel and says so in another notification. `Open viewer` opens `vnc://localhost:<port>` with the system's viewer. Closing the pane closes the tunnel; a reload of the mod keeps it.
 - With the prop `follow`, the pane shows whichever session the terminal behind that key used last, and changes with it. The CLI sets this prop on the pane it opens beside a terminal.
 - Each screenshot tells the CLI that the pane is open, so that a command in a terminal does not open a second pane for the same session.
 - It does not follow agent statuses and has no key commands of its own.
@@ -53,7 +54,7 @@ A pane that shows the screen of a remote Linux machine, the one a coding agent i
 - Use `bash-screen input`, not `click`, `type` and `key`: those read the whole window back after each action and take three times as long. `look --viewer` needs bash-screen 0.5.2 or later; with an older one the pane shows the CLI's complaint about the flag.
 - Text starting with `-` fails remotely, so leading dashes are sent as `minus` key presses and the rest as text.
 - The tunnel's process id is kept in `localStorage`, and checked with `kill -0` on start: a reload of the mod must not lose a running tunnel, nor show one that has died.
-- Each batch is one SSH round trip, around half a second, and the picture follows about a second later: fine for helping out, too slow for working in; that is what `Take over` is for. Text composed with an input method does not arrive; only plain key presses do.
+- Each batch is one SSH round trip, around half a second, and the picture follows about a second later: fine for helping out, too slow for working in; that is what the `VNC` button is for. Text composed with an input method does not arrive; only plain key presses do.
 - `exec`, and so the screenshot, also runs during `herdr-app check`: return from `init` early when `checking()`.
 - It assumes `bash-screen` is on `PATH` and a default host is configured (`bash-screen init <host>`).
 
@@ -68,4 +69,5 @@ A pane that shows the screen of a remote Linux machine, the one a coding agent i
 - Typing `hello` and Enter with the pane focused types into the remote field.
 - With a static remote screen, `mods/bash-screen-frame/*.png` stop changing.
 - Closing the pane removes its four files.
-- `Take over` shows a notification and the bar; a VNC client connects to the port; `Stop` removes the bar and the `ssh` process is gone.
+- Before `Take over`, a press on the picture changes nothing on the remote screen and adds no `you:` row to the log.
+- `Take over` turns the header to its taken-over form and presses act; `VNC` shows a notification, a VNC client connects to the port; `Hand back` restores the header, presses stop acting, and the `ssh` process is gone.
