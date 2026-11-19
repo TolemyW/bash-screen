@@ -101,9 +101,41 @@ bash-screen do click e7 then type "Ada" then key tab return then wait --text Sav
 
 ## Preview
 
+While you watch the remote screen, the agent can read the page with
+`bash-screen text` and locate form controls with `bash-screen observe`.
+It can fill a field by ref, check the returned changes, and read validation
+messages or a submission receipt as text. Use `look` when the task calls
+for a visual check, such as identifying which control a dialog covers.
+
+For a full-resolution HTML viewer, run:
+
+```sh
+bash-screen web --open
+```
+
+This starts a local server and opens its URL in your browser. It needs Python 3
+on the local machine, with no extra packages. The viewer provides fit-to-window
+and 100–200% zoom, pause, full screen, recent actions, and optional mouse and
+keyboard control. Use **Send text** for paste or input methods. Screenshots use
+full screen resolution with WebP compression; refreshes and input use SSH.
+Browser-reserved shortcuts may stay local, and mouse dragging is not supported.
+`Ctrl+C` stops the viewer while the remote apps keep running.
+
 Inside herdr or the Herdr desktop app, the first command opens a preview pane
 next to the pane that ran it. Anywhere else, run `bash-screen preview` in a
 terminal of your own.
+
+Terminals without image support use compatible quadrant block characters.
+The character preview sharpens edges and chooses each cell's two colours to
+preserve colour boundaries. Smaller terminal fonts provide more cells and
+therefore more detail. The resolution keys below affect image previews; they
+cannot add detail beyond the cell grid in a character preview.
+
+To keep character rendering even in a terminal with image support:
+
+```sh
+BASH_SCREEN_PREVIEW_BLOCKS=quad bash-screen preview
+```
 
 In the preview pane:
 

@@ -25,6 +25,25 @@ and can be run again safely. If it reports missing packages, pass its
 If the command itself is missing, see
 https://github.com/TolemyW/bash-screen#quick-start.
 
+## Reading pages and filling forms
+
+Use the remote accessibility tree for routine browser work, including when a
+person has the HTML viewer open. The viewer displays a remote screen image.
+
+- Read page content with `bash-screen text`. Use the observation from launch
+  or `bash-screen observe` to find fields, buttons and their refs.
+- Fill fields with `type --ref`, open choices with `click`, and read the
+  returned changes for updated values and newly available options.
+- Before submission, check the exposed values against the requested ones.
+  Use `text` for inline validation messages and input contents, or
+  `observe --all` when you need surrounding labels to identify a field.
+  After submission, check the confirmation or error with `text`, or use
+  `wait --text` when the expected message is known.
+- Use `look` for a requested visual check or a specific question these
+  commands cannot answer, such as which control an overlay covers. Limit
+  it to the relevant region when its bounds are known. Resume using refs
+  and text once the question is resolved.
+
 ## The loop
 
 ```sh
@@ -36,7 +55,6 @@ bash-screen type --ref e7 hello          # or: bash-screen type --name Email hel
 bash-screen key ctrl+l         # several in order: bash-screen key ctrl+l return
 bash-screen scroll --dy -5     # negative is down; --ref e40 scrolls an element into view
 bash-screen text               # the text of the page, to read it
-bash-screen look               # screenshot saved locally as PNG; prints the path
 ```
 
 ## Do several steps at once
@@ -96,8 +114,7 @@ the plain `wait` works.
   cells, and the content of an input in `[ ]`.
 - Positions are screen pixels, the same as in a `look` image at scale 1.
 - `observe` lists interactive elements. Add `--all` for headings and text.
-- When the list does not tell you enough, run `look` and read the PNG.
-  `--region x,y,width,height` limits it to part of the screen.
+- For a visual check, `look --region x,y,width,height` saves a cropped PNG.
 - `type` without `--ref` pastes at the keyboard focus. Pasting replaces the
   clipboard of the remote screen.
 - `launch --wait <seconds>` gives a slow app longer before the first
@@ -136,12 +153,25 @@ bash-screen sessions
 - An app crashes or hangs after `observe` or after a key press (seen with
   Electron apps): start it with `bash-screen launch --no-a11y -- <app>`.
   `observe` then cannot see it; work from `look` and positions.
-- A dialog covers the page: `observe` still lists the covered elements,
-  before the dialog's own. Check with `look` which ones are on top.
+- When a dialog covers the page, `observe` still lists the covered elements
+  before the dialog's own. Use the dialog's refs if they are clear.
 - A dropped connection is not resumed. Run the command again after checking
   with `observe` whether the action already took effect.
 
 ## The person watching
+
+For a full-resolution HTML viewer, run `bash-screen web --open` (local Python 3
+is required). Without `--open`, it prints a local URL to open in a browser.
+It supports zoom, pause, and optional click, scroll and keyboard control.
+Use its Send text field for input methods. `Ctrl+]` releases keyboard control;
+`Ctrl+C` in the serving terminal stops the viewer and leaves remote apps running.
+The page needs a browser surface; a plain terminal cannot render its HTML.
+
+For a character preview, run `BASH_SCREEN_PREVIEW_BLOCKS=quad bash-screen preview`.
+This uses widely supported quadrant blocks, also the automatic fallback when
+the terminal cannot display images. Smaller terminal fonts give more detail;
+`res full` does not increase the character grid. `sextant` offers more vertical
+detail but needs font support; switch to `quad` if it shows empty boxes.
 
 Inside herdr or the Herdr desktop app, the first command opens a live preview
 pane beside your terminal; that is expected. Set `BASH_SCREEN_NO_PREVIEW=1`

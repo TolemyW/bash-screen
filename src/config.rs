@@ -23,7 +23,7 @@ pub struct Config {
     #[serde(default = "default_preview_direction")]
     pub preview_direction: String,
     /// How the preview draws the screen: "auto" (a real image when the terminal
-    /// supports Kitty graphics, else sextants), "image", "sextant", "quad" or "half".
+    /// supports Kitty graphics, else quadrants), "image", "sextant", "quad" or "half".
     #[serde(default = "default_preview_blocks")]
     pub preview_blocks: String,
     /// Longest edge, in pixels, of the picture sent to an image-mode preview;

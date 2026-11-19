@@ -28,8 +28,16 @@ This needs Rust.
 
 ```sh
 cargo test --release
+python3 -m unittest discover -s tests -p 'test_web.py'
+node --check web/viewer.js
 tests/local-e2e.sh target/release/bash-screen
 ```
 
-The second one needs a Debian or Ubuntu machine with the packages listed in
+Use synthetic form values and example hostnames in fixtures and documentation.
+Keep local configuration, session logs, viewer URLs with tokens, and screenshots
+of personal sessions out of contributions.
+
+The HTTP tests use only Python's standard library and loopback sockets. The
+JavaScript syntax check needs Node.js. The last command needs a Debian or
+Ubuntu machine with the packages listed in
 [docs/reference.md](docs/reference.md#remote-host).

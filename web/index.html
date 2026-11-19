@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>bash-screen · Live view</title><link rel="stylesheet" href="/style.css"><script src="/viewer.js" defer></script></head>
+<body>
+<header>
+  <div class="brand"><span class="mark">▣</span><strong>bash-screen</strong><span class="divider"></span><span id="host">Connecting…</span></div>
+  <div class="toolbar">
+    <label>View <select id="zoom" aria-label="Display zoom"><option value="fit">Fit</option><option value="1">100%</option><option value="1.5">150%</option><option value="2">200%</option></select></label>
+    <button id="pause">Pause</button><button id="fullscreen">Full screen</button><button id="control" aria-pressed="false" disabled>Take control</button>
+  </div>
+</header>
+<div class="statusbar"><span><i id="dot"></i><span id="status" role="status">Connecting to the remote screen</span></span><span id="metrics">Full resolution</span></div>
+<main id="viewport" class="fit">
+  <div id="empty">Waiting for the first frame…</div>
+  <img id="screen" alt="Remote desktop" tabindex="0" draggable="false" hidden>
+</main>
+<footer>
+  <span id="hint">View only · Take control to click, type, and scroll</span>
+  <details id="events"><summary>Recent activity</summary><ol id="log"></ol></details>
+</footer>
+<form id="textform" hidden><label for="text">Send text <span>Supports paste and input methods</span></label><textarea id="text" rows="2" maxlength="16000" placeholder="Enter text for the remote app"></textarea><button type="submit">Send text</button><button type="button" id="enter">Enter ↵</button></form>
+</body>
+</html>

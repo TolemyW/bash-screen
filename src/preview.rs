@@ -48,7 +48,7 @@ impl Mode {
                 if terminal_shows_images() || std::env::var_os("HC_TERMINAL_ID").is_some() {
                     Mode::Image
                 } else {
-                    Mode::Blocks(Blocks::Sextant)
+                    Mode::Blocks(Blocks::Quad)
                 }
             }
             "image" => Mode::Image,
@@ -194,36 +194,71 @@ struct Shown {
     image: String,
 }
 
-fn luminance(p: [u8; 3]) -> u32 {
-    299 * p[0] as u32 + 587 * p[1] as u32 + 114 * p[2] as u32
-}
-
 /// Reduce one cell's sub-pixels to two colours and the mask of which sub-pixels
-/// take the foreground colour. The split is by brightness around the cell mean.
+/// take the foreground colour. Try every distinct partition: even sextants have
+/// only 32. Minimizing RGB error preserves boundaries between similar-brightness
+/// colours that a brightness threshold would merge.
 fn two_colours(pixels: &[[u8; 3]]) -> (usize, [u8; 3], [u8; 3]) {
-    let mean = pixels.iter().map(|p| luminance(*p)).sum::<u32>() / pixels.len() as u32;
-    let mut mask = 0;
-    let mut sums = [[0u32; 3]; 2];
-    let mut counts = [0u32; 2];
-    for (i, p) in pixels.iter().enumerate() {
-        let bright = (luminance(*p) > mean) as usize;
-        mask |= bright << i;
-        counts[bright] += 1;
-        for c in 0..3 {
-            sums[bright][c] += p[c] as u32;
+    debug_assert!(!pixels.is_empty() && pixels.len() <= 6);
+    let mut best = (0, pixels[0], pixels[0]);
+    let mut best_error = u32::MAX;
+    // Fix the last pixel in the background to avoid complementary partitions.
+    for mask in 0..(1 << (pixels.len() - 1)) {
+        let mut sums = [[0u32; 3]; 2];
+        let mut counts = [0u32; 2];
+        for (i, pixel) in pixels.iter().enumerate() {
+            let side = (mask >> i) & 1;
+            counts[side] += 1;
+            for (sum, value) in sums[side].iter_mut().zip(pixel) {
+                *sum += *value as u32;
+            }
+        }
+        let mut colours = [[0u8; 3]; 2];
+        for side in 0..2 {
+            let n = counts[side].max(1);
+            for c in 0..3 {
+                colours[side][c] = ((sums[side][c] + n / 2) / n) as u8;
+            }
+        }
+        if counts[1] == 0 {
+            colours[1] = colours[0];
+        }
+        let error = pixels
+            .iter()
+            .enumerate()
+            .map(|(i, pixel)| {
+                pixel
+                    .iter()
+                    .zip(colours[(mask >> i) & 1])
+                    .map(|(a, b)| {
+                        let delta = *a as i32 - b as i32;
+                        (delta * delta) as u32
+                    })
+                    .sum::<u32>()
+            })
+            .sum();
+        if error < best_error {
+            best = (mask, colours[1], colours[0]);
+            best_error = error;
+            if error == 0 {
+                break;
+            }
         }
     }
-    let average = |side: usize| {
-        let n = counts[side].max(1);
-        [
-            (sums[side][0] / n) as u8,
-            (sums[side][1] / n) as u8,
-            (sums[side][2] / n) as u8,
-        ]
-    };
-    let (dark, bright) = (average(0), average(1));
-    // A flat cell has no bright pixels: both colours are the same.
-    (mask, if counts[1] == 0 { dark } else { bright }, dark)
+    best
+}
+
+/// Restore some edge contrast lost during downsampling without amplifying small
+/// variations in flat backgrounds. This changes only the character preview.
+fn sharpen_blocks(mut rgb: image::RgbImage) -> image::RgbImage {
+    let blurred = image::imageops::blur(&rgb, 0.6);
+    for (value, smooth) in rgb.as_mut().iter_mut().zip(blurred.as_raw()) {
+        let delta = *value as i16 - *smooth as i16;
+        if delta.abs() >= 6 {
+            *value = (*value as i16 + delta / 2).clamp(0, 255) as u8;
+        }
+    }
+    rgb
 }
 
 /// Turn raw RGB sub-pixels into one string of coloured block characters per row.
@@ -614,9 +649,11 @@ pub fn run(
                 }
                 let (old_w, old_h) = (shown.cells_w, shown.cells_h);
                 if let (Mode::Blocks(blocks), Some(png)) = (mode, decode("png")) {
-                    let rgb = image::load_from_memory_with_format(&png, image::ImageFormat::Png)?
-                        .to_rgb8()
-                        .into_raw();
+                    let rgb = sharpen_blocks(
+                        image::load_from_memory_with_format(&png, image::ImageFormat::Png)?
+                            .to_rgb8(),
+                    )
+                    .into_raw();
                     shown.sent = format!(
                         "{}x{} sub-pixels, {:.1} KB/frame   [i] control",
                         w,
@@ -816,6 +853,53 @@ pub fn run(
 #[cfg(test)]
 mod tests {
     use super::clip;
+
+    #[test]
+    fn colour_boundaries_survive_similar_brightness() {
+        let pixels = [[200, 0, 0], [220, 0, 0], [0, 100, 0], [0, 110, 0]];
+        let (mask, fg, bg) = super::two_colours(&pixels);
+        let restored: Vec<_> = (0..4)
+            .map(|i| if mask & (1 << i) != 0 { fg } else { bg })
+            .collect();
+        assert_eq!(
+            restored,
+            [[210, 0, 0], [210, 0, 0], [0, 105, 0], [0, 105, 0]]
+        );
+    }
+
+    #[test]
+    fn every_two_colour_pattern_is_lossless() {
+        for n in [2, 4, 6] {
+            for pattern in 0..(1 << n) {
+                let pixels: Vec<_> = (0..n)
+                    .map(|i| {
+                        if pattern & (1 << i) == 0 {
+                            [24, 120, 212]
+                        } else {
+                            [210, 42, 18]
+                        }
+                    })
+                    .collect();
+                let (mask, fg, bg) = super::two_colours(&pixels);
+                for (i, pixel) in pixels.iter().enumerate() {
+                    assert_eq!(*pixel, if mask & (1 << i) != 0 { fg } else { bg });
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn sharpening_preserves_flat_backgrounds_and_strengthens_edges() {
+        let flat = image::RgbImage::from_pixel(9, 9, image::Rgb([128, 128, 128]));
+        assert_eq!(super::sharpen_blocks(flat.clone()), flat);
+        let edge = image::RgbImage::from_fn(12, 6, |x, _| {
+            image::Rgb(if x < 6 { [60; 3] } else { [200; 3] })
+        });
+        let sharp = super::sharpen_blocks(edge);
+        assert!(sharp.get_pixel(5, 3)[0] < 60);
+        assert!(sharp.get_pixel(6, 3)[0] > 200);
+        assert_eq!(sharp.dimensions(), (12, 6));
+    }
 
     #[test]
     fn clipping_counts_wide_characters_as_two_cells() {

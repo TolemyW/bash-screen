@@ -5,6 +5,7 @@ mod herdr;
 mod input;
 mod preview;
 mod remote;
+mod web;
 
 use anyhow::{bail, Context, Result};
 use base64::Engine;
@@ -201,6 +202,19 @@ enum Cmd {
     Windows,
     /// Print the commands a person needs to take over the session with a VNC client
     Vnc,
+    /// Serve a full-resolution HTML viewer on localhost. Open the printed URL
+    /// in a browser; Ctrl+C stops the viewer and leaves the remote apps running
+    Web {
+        /// Local port (0 chooses an available port)
+        #[arg(long, default_value_t = 0)]
+        port: u16,
+        /// Seconds between screenshots
+        #[arg(long, default_value_t = 1.0)]
+        interval: f64,
+        /// Open the viewer in the default browser
+        #[arg(long)]
+        open: bool,
+    },
     /// Show or change the preview resolution: a pixel cap, "full", "up" or "down"
     Res { value: Option<String> },
     /// A person's own input, for a viewer such as the Herdr app's pane: inject
@@ -221,7 +235,8 @@ enum Cmd {
         #[arg(long, value_name = "DIR")]
         dir: Vec<PathBuf>,
     },
-    /// Live preview of the screen, in this terminal. Inside herdr it opens by
+    /// Live preview of the screen, in this terminal. Uses quadrant blocks when
+    /// images are unavailable; smaller terminal fonts give more detail. Inside herdr it opens by
     /// itself beside the pane that runs commands
     Preview {
         /// Seconds between refreshes
@@ -607,6 +622,14 @@ fn run() -> Result<()> {
 
     let config = load_config(host.as_ref())?;
     let target = config.target(host.as_deref(), session.as_deref())?;
+    if let Cmd::Web {
+        port,
+        interval,
+        open,
+    } = cli.command
+    {
+        return web::run(target, port, interval, open, json_output);
+    }
     let config_max_px = config.preview_max_px;
 
     if let Cmd::Look { viewer: true, .. } = cli.command {
@@ -639,7 +662,9 @@ fn run() -> Result<()> {
     let observation = |reply: Value| show(&reply, json_output, print_observation);
 
     match cli.command {
-        Cmd::Config { .. } | Cmd::Preview { .. } | Cmd::Skill { .. } => unreachable!(),
+        Cmd::Config { .. } | Cmd::Preview { .. } | Cmd::Web { .. } | Cmd::Skill { .. } => {
+            unreachable!()
+        }
         Cmd::Init { .. } => {
             if !remote.setup()? {
                 bail!("setup on {host} did not finish; see the messages above");

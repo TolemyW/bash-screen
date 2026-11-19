@@ -209,8 +209,17 @@ otherwise.
 - The keyboard stays with the pane that had it.
 
 It draws a real image when the terminal supports the Kitty graphics protocol,
-and block characters otherwise. Its text goes wherever the pane has spare
+and quadrant block characters otherwise. Its text goes wherever the pane has spare
 room: a column beside the picture, or lines below it.
+
+Character previews apply mild edge sharpening after downsampling and choose
+the two colours in each cell by minimizing RGB error. `quad` uses 2x2 samples
+per cell and widely supported block glyphs. `sextant` uses 2x3 samples but needs
+a font with Unicode sextant glyphs; missing glyphs appear as empty boxes.
+Set `BASH_SCREEN_PREVIEW_BLOCKS=quad` (or `sextant`, `half`, `image`, `auto`)
+to override `preview_blocks` for one preview process. To increase character
+detail, reduce terminal font size or enlarge the pane. `res full` and the
+resolution keys change the image pixel cap, not the character grid.
 
 Besides the keys in the preview pane, the resolution can be changed:
 
@@ -227,6 +236,32 @@ While you are in control of the screen:
   terminal keep for themselves never reach the pane.
 - Your actions appear in the action log marked `you:`. Nothing stops you and
   the agent from acting at the same time.
+
+## HTML viewer
+
+`bash-screen [--host HOST] [--session NAME] web [--port PORT] [--interval SECONDS] [--open]`
+serves the current target in a browser. Python 3 must be available locally.
+The default port is `0` (an available port); refreshes default to one second,
+with `--interval` accepting 0.2–60 seconds. `--open` launches the default browser;
+otherwise open the complete URL printed in the terminal. `--json` emits one
+startup object with `event: "ready"` and `url`.
+
+The server binds only to `127.0.0.1` and requires a per-run token carried in the
+printed URL fragment. Copy the complete URL from the terminal to open another
+browser tab. Keep it private for the lifetime of the viewer.
+Input is off until **Take control** is selected. Click the picture to focus
+keyboard input; `Ctrl+]` releases control. On macOS, Command combinations sent
+to the picture map to Control on the remote Linux desktop. Browser-reserved
+shortcuts may remain local. **Send text** supports paste and input methods.
+Clicks, wheel events and keystrokes are sent in order; dragging is not supported.
+Pausing releases control. Failed input is not retried, because part of it may
+have already reached the remote app.
+
+The picture is fetched at native resolution with WebP quality 90. Identical
+images are not sent again from the local server to the browser. This is a
+periodic screenshot viewer, not a video stream; latency includes an SSH round
+trip. The existing terminal and native viewers remain available. Stop the local
+server with `Ctrl+C`; the remote session is left running.
 
 ## Configuration
 
