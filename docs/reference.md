@@ -179,7 +179,7 @@ The argument is a JSON list. Each action has a `kind`:
 A viewer takes its pictures with `bash-screen look --viewer`, which differs
 from a plain `look` in three ways:
 
-- With `--json`, the reply also has `events`, the last 12 entries of the
+- With `--json`, the reply also has `events`, the last 60 entries of the
   action log (each with `seq`, `ok` and `what`), and the `host` and `session`
   the picture is of.
 - It records that a viewer of that session is open. For ten seconds after,

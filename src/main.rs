@@ -267,7 +267,7 @@ fn parse_numbers(text: &str, count: usize, what: &str) -> Result<Vec<i64>> {
 }
 
 /// How many recent actions a viewer pane is sent with each picture.
-const VIEWER_EVENTS: u32 = 12;
+const VIEWER_EVENTS: u32 = 60;
 
 fn look(
     remote: &Remote,

@@ -25,7 +25,7 @@ const WHEEL_STEP = 40; // pixels of wheel travel for one notch on the remote sid
 // the picture leaves: under it, or beside it when the pane is wider than the picture.
 const LOG_LINE = 18;
 const LOG_PAD = 4; // above the first line when under the picture
-const LOG_MOST = 12; // the CLI sends this many
+const LOG_MOST = 60; // the CLI sends this many, enough to fill a tall pane
 const LOG_SIDE = 200; // narrowest column worth having beside the picture
 
 // Takes a screenshot and publishes it only when it differs from the last one.
