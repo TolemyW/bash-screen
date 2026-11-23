@@ -25,16 +25,25 @@ jobs:
         run: |
           version="$(sed -n 's/^version = "\(.*\)"$/\1/p' herdr-plugin.toml | head -1)"
           test "v$version" = "$GITHUB_REF_NAME"
-          grep -q "^version = \"$version\"$" Cargo.toml
+          # Both the CLI's and the workspace's, which the helper takes.
+          test "$(grep -c "^version = \"$version\"$" Cargo.toml)" = 2
       - if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y musl-tools
       - run: rustup target add ${{ matrix.target }}
       - run: cargo build --release --locked --target ${{ matrix.target }}
       - run: cp target/${{ matrix.target }}/release/bash-screen bash-screen-${{ matrix.name }}
+      # The program that runs on the remote host, which is always Linux.
+      - if: runner.os == 'Linux'
+        run: |
+          cargo build --release --locked --target ${{ matrix.target }} -p bash-screen-helper
+          cp target/${{ matrix.target }}/release/bs-helper bs-helper-${{ matrix.name }}
       - uses: actions/upload-artifact@v4
         with:
           name: bash-screen-${{ matrix.name }}
-          path: bash-screen-${{ matrix.name }}
+          path: |
+            bash-screen-${{ matrix.name }}
+            bs-helper-${{ matrix.name }}
+          if-no-files-found: ignore
 
   publish:
     needs: build
@@ -43,7 +52,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           merge-multiple: true
-      - run: sha256sum bash-screen-* > SHA256SUMS && cat SHA256SUMS
-      - run: gh release create "$GITHUB_REF_NAME" bash-screen-* SHA256SUMS --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes
+      - run: sha256sum bash-screen-* bs-helper-* > SHA256SUMS && cat SHA256SUMS
+      - run: gh release create "$GITHUB_REF_NAME" bash-screen-* bs-helper-* SHA256SUMS --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes
         env:
           GH_TOKEN: ${{ github.token }}

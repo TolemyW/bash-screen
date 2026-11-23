@@ -50,19 +50,13 @@ start() {
   # Private X authority so only this user can connect to the display: one
   # random cookie for any display number, since the server picks the number
   # only once it runs. This is what `xauth add` would write.
+  # Each field is a two-byte length and its bytes: family 0xffff (any host),
+  # an empty address, an empty display number (any display), the name of the
+  # method, then 16 random bytes.
   export XAUTHORITY="$RUN/Xauthority"
   : > "$XAUTHORITY" && chmod 600 "$XAUTHORITY"
-  python3 - "$XAUTHORITY" <<'PYTHON'
-import os, struct, sys
-
-def field(data):
-    return struct.pack(">H", len(data)) + data
-
-wild = 0xFFFF  # any host, and with an empty number any display
-entry = struct.pack(">H", wild) + field(b"") + field(b"") + field(b"MIT-MAGIC-COOKIE-1") + field(os.urandom(16))
-with open(sys.argv[1], "wb") as out:
-    out.write(entry)
-PYTHON
+  printf '\377\377\000\000\000\000\000\022MIT-MAGIC-COOKIE-1\000\020' > "$XAUTHORITY"
+  head -c 16 /dev/urandom >> "$XAUTHORITY"
 
   # Let the server pick a free display number and report it back.
   local fdfile="$RUN/displayfd"

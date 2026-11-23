@@ -15,7 +15,8 @@ This needs Rust.
 |---|---|
 | `src/` | The local CLI and preview (Rust) |
 | `skills/bash-screen/SKILL.md` | The Agent Skill; built into the binary and printed by `bash-screen skill` |
-| `remote/` | Files copied to the remote host: installer, session launcher and helper |
+| `helper/` | The helper that runs on the remote host (Rust), released as a static program for Linux |
+| `remote/` | Scripts copied to the remote host: installer and session launcher, and `bs_remote.py`, the earlier helper |
 | `herdr-plugin.toml` | herdr plugin manifest |
 | `herdr-app/` | The mod that shows the remote screen in a pane of the Herdr app |
 | `docs/reference.md` | Reference: configuration, host requirements, command details |
@@ -27,10 +28,11 @@ This needs Rust.
 ## Tests
 
 ```sh
-cargo test --release
+cargo test --release --workspace
 python3 -m unittest discover -s tests -p 'test_web.py'
 node --check web/viewer.js
-tests/local-e2e.sh target/release/bash-screen
+cargo build --release --workspace
+BASH_SCREEN_HELPER_FILE="$PWD/target/release/bs-helper" tests/local-e2e.sh target/release/bash-screen
 ```
 
 Use synthetic form values and example hostnames in fixtures and documentation.
@@ -38,6 +40,8 @@ Keep local configuration, session logs, viewer URLs with tokens, and screenshots
 of personal sessions out of contributions.
 
 The HTTP tests use only Python's standard library and loopback sockets. The
-JavaScript syntax check needs Node.js. The last command needs a Debian or
+JavaScript syntax check needs Node.js. The last two commands need a Debian or
 Ubuntu machine with the packages listed in
-[docs/reference.md](docs/reference.md#remote-host).
+[docs/reference.md](docs/reference.md#remote-host). Until a version is
+released, its helper is not published, so a checkout always passes its own
+with `BASH_SCREEN_HELPER_FILE`.

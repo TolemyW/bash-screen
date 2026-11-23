@@ -27,19 +27,23 @@ check() { # command, package
 }
 check apt-get apt
 check dpkg dpkg
-check python3 python3
 check dbus-daemon dbus
 check xkbcomp x11-xkb-utils
 if [ -x /usr/libexec/at-spi-bus-launcher ]; then say "  ok       at-spi bus"; else say "  MISSING  at-spi bus"; needs_admin+=(at-spi2-core); fi
-if python3 -c 'import PIL' >/dev/null 2>&1; then say "  ok       python Pillow"; else say "  MISSING  python Pillow"; needs_admin+=(python3-pil); fi
-# Wanted for reading text only, and never a reason for setup to fail.
-optional=()
-if python3 -c 'import gi; gi.require_version("Atspi", "2.0"); from gi.repository import Atspi' >/dev/null 2>&1; then
-  say "  ok       python Atspi bindings"
+if command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1; then
+  say "  ok       curl or wget"
 else
-  say "  absent   python Atspi bindings (optional, for reading page text)"
-  optional+=(python3-gi gir1.2-atspi-2.0)
+  say "  MISSING  curl or wget"; needs_admin+=(curl)
 fi
+
+# Downloads `url` to `file`.
+fetch() { # url file
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL --retry 2 -o "$2" "$1"
+  else
+    wget -q -O "$2" "$1"
+  fi
+}
 
 if ! command -v apt-get >/dev/null 2>&1 || ! command -v dpkg >/dev/null 2>&1; then
   say ""
@@ -136,6 +140,46 @@ else
 fi
 
 # --- agent-desktop -------------------------------------------------------------
+# Downloads the npm package, checks it, and puts the program for this
+# processor under ad/, where npm would have put it.
+install_agent_desktop() {
+  local arch tgz unpacked dest attempt name
+  case "$(uname -m)" in
+    x86_64) arch=x64 ;;
+    aarch64) arch=arm64 ;;
+    *) say "  no agent-desktop program for $(uname -m)"; return 1 ;;
+  esac
+  mkdir -p "$BASE/pkg"
+  tgz="$BASE/pkg/agent-desktop-$AD_VERSION.tgz"
+  for attempt in 1 2 3; do # a slow link can drop a 15 MB download part-way
+    if [ -f "$tgz" ] && [ "$(sha256sum "$tgz" | cut -d' ' -f1)" = "$AD_SHA256" ]; then
+      break
+    fi
+    rm -f "$tgz"
+    fetch "$AD_URL" "$tgz.part" && mv "$tgz.part" "$tgz" || say "  download failed, attempt $attempt of 3"
+  done
+  if [ ! -f "$tgz" ] || [ "$(sha256sum "$tgz" | cut -d' ' -f1)" != "$AD_SHA256" ]; then
+    say "  the agent-desktop package could not be downloaded intact"
+    rm -f "$tgz"
+    return 1
+  fi
+  unpacked="$(mktemp -d)"
+  dest="$BASE/ad/node_modules/agent-desktop/bin"
+  mkdir -p "$dest" "$BASE/ad/node_modules/.bin"
+  tar -xzf "$tgz" -C "$unpacked" "package/bin/agent-desktop-linux-$arch" \
+      "package/bin/agent-desktop-linux-clipboard-owner-linux-$arch" || { rm -rf "$unpacked"; return 1; }
+  for name in agent-desktop agent-desktop-linux-clipboard-owner; do
+    if [ "$name" = agent-desktop ]; then
+      cp "$unpacked/package/bin/agent-desktop-linux-$arch" "$dest/$name.new"
+    else
+      cp "$unpacked/package/bin/agent-desktop-linux-clipboard-owner-linux-$arch" "$dest/$name.new"
+    fi
+    chmod 755 "$dest/$name.new" && mv "$dest/$name.new" "$dest/$name"
+  done
+  rm -rf "$unpacked"
+  ln -sfn ../agent-desktop/bin/agent-desktop "$BASE/ad/node_modules/.bin/agent-desktop"
+}
+
 step "Installing agent-desktop $AD_VERSION into $BASE/ad"
 AD="$BASE/ad/node_modules/.bin/agent-desktop"
 have="$("$AD" version 2>/dev/null | sed -n 's/.*"version":"\([0-9.]*\)"}}.*/\1/p')"
@@ -144,44 +188,7 @@ if [ "$have" = "$AD_VERSION" ]; then
 else
   # The package carries a ready-made program for each system; take ours out
   # of it. This is all `npm install` would do, without needing Node.
-  mkdir -p "$BASE/ad"
-  if AD_URL="$AD_URL" AD_SHA256="$AD_SHA256" python3 - "$BASE/ad" <<'PYTHON' && "$AD" version >/dev/null 2>&1
-import hashlib, io, os, platform, sys, tarfile, urllib.request
-
-dest = os.path.join(sys.argv[1], "node_modules", "agent-desktop", "bin")
-arch = {"x86_64": "x64", "aarch64": "arm64"}.get(platform.machine())
-if arch is None:
-    sys.exit(f"no agent-desktop program for {platform.machine()}")
-data = b""
-for attempt in range(3):  # a slow link can drop a 15 MB download part-way
-    try:
-        data = urllib.request.urlopen(os.environ["AD_URL"], timeout=300).read()
-    except Exception as error:
-        print(f"  download failed ({error.__class__.__name__}), attempt {attempt + 1} of 3")
-        continue
-    if hashlib.sha256(data).hexdigest() == os.environ["AD_SHA256"]:
-        break
-else:
-    sys.exit("the agent-desktop package could not be downloaded intact")
-package = tarfile.open(fileobj=io.BytesIO(data))
-os.makedirs(dest, exist_ok=True)
-wanted = {
-    f"package/bin/agent-desktop-linux-{arch}": "agent-desktop",
-    f"package/bin/agent-desktop-linux-clipboard-owner-linux-{arch}": "agent-desktop-linux-clipboard-owner",
-}
-for member, name in wanted.items():
-    path = os.path.join(dest, name)
-    with open(path + ".new", "wb") as out:
-        out.write(package.extractfile(member).read())
-    os.chmod(path + ".new", 0o755)
-    os.replace(path + ".new", path)
-links = os.path.join(sys.argv[1], "node_modules", ".bin")
-os.makedirs(links, exist_ok=True)
-link = os.path.join(links, "agent-desktop")
-if os.path.lexists(link):
-    os.remove(link)
-os.symlink("../agent-desktop/bin/agent-desktop", link)
-PYTHON
+  if install_agent_desktop && "$AD" version >/dev/null 2>&1
   then
     say "  installed agent-desktop $AD_VERSION"
   else
@@ -195,11 +202,6 @@ step "Result"
 if [ "${#needs_admin[@]}" -gt 0 ]; then
   say "An administrator needs to install these packages:"
   say "  sudo apt-get install ${needs_admin[*]}"
-fi
-if [ "${#optional[@]}" -gt 0 ]; then
-  say "Optional: \`bash-screen text\` and \`wait --text\` see the running text of a page,"
-  say "such as paragraphs, only with these packages:"
-  say "  sudo apt-get install ${optional[*]}"
 fi
 for problem in ${problems[@]+"${problems[@]}"}; do
   say "Problem: $problem"
