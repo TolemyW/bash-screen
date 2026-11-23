@@ -6,6 +6,10 @@ Material to look up. For a first run, see the [README](../README.md).
 
 - The agent calls the `bash-screen` CLI. Each call is one SSH round trip to a
   helper on the remote host; one SSH connection is reused across calls.
+- The helper, `bs-helper`, is a program of its own, built for Linux on x86_64
+  and arm64 and published with each release. The CLI downloads the one for
+  the host's processor once, checks it against the release's checksums, and
+  copies it over SSH, so the host itself needs no access to GitHub.
 - The remote host runs an isolated GUI session: an Xvnc virtual display, the
   openbox window manager, and a private session bus. Nothing listens on a
   network port.
@@ -32,13 +36,17 @@ do not work, because agent-desktop needs glibc 2.35.
 The host must already have these packages:
 
 - `dbus`, `at-spi2-core`, `x11-xkb-utils`
-- Python 3 with Pillow
+- `curl` or `wget`, to download agent-desktop
 - on Ubuntu 22.04 also `xkb-data`, which any host with a desktop has
-- optionally `python3-gi` and `gir1.2-atspi-2.0`, for [reading text](#reading-text)
 
 `init` checks for them and prints the `apt-get install` command an
 administrator should run if any are missing. Everything else (Xvnc, openbox,
-agent-desktop) is unpacked into the remote directory without root.
+agent-desktop and the helper) is put into the remote directory without root.
+The host needs no Python.
+
+The three packages cannot be put there instead: the accessibility bus launcher
+starts `/usr/bin/dbus-daemon`, and the X server runs `/usr/bin/xkbcomp`, at
+paths that cannot be changed.
 
 `bash-screen init` runs three steps that are also available on their own:
 `config`, `setup` and `start`. Finished steps are skipped when it runs again.
@@ -100,11 +108,10 @@ browser it prints only the page, not the toolbars.
 - Parts that are not showing, such as other tabs, are left out. Text that is
   only scrolled out of view is included.
 
-This reads the accessibility bus directly and needs two more packages on the
-host, `python3-gi` and `gir1.2-atspi-2.0`. `init` works without them and
-names them as optional when they are absent. Without them `text` prints the names of the elements only, says so, and
-leaves out running text such as paragraphs; `wait --text` and `wait --gone`
-then do not see that text either.
+This reads the accessibility bus directly. When the bus cannot be read,
+`text` prints the names of the elements only, says so, and leaves out running
+text such as paragraphs; `wait --text` and `wait --gone` then do not see that
+text either.
 
 ## Waiting and batches
 
@@ -294,6 +301,8 @@ remote_dir = "~/tools/bash-screen"
 | `BASH_SCREEN_NO_PREVIEW` | Do not open the preview pane |
 | `BASH_SCREEN_BUILD_FROM_SOURCE` | Build from source at install time instead of downloading a binary |
 | `BASH_SCREEN_DEBUG` | Make the preview log the timing of each redraw to `~/.local/state/bash-screen/preview-timing.log` |
+| `BASH_SCREEN_HELPER_FILE` | Copy this file to the host as the helper instead of the released one; for a helper built from a checkout |
+| `BASH_SCREEN_HELPER` | `python` runs the earlier helper, `bs_remote.py`, instead; it needs Python 3 with Pillow on the host, and `python3-gi` and `gir1.2-atspi-2.0` for reading text |
 
 ## Known limits
 
