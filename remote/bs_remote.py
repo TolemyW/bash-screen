@@ -46,7 +46,11 @@ NOISE_ROLES = {"group", "unknown", "separator", "scrollarea", "menu", "toolbar",
 
 
 class Fail(Exception):
-    pass
+    """A failure to report. `reply` holds fields to send along with the error."""
+
+    def __init__(self, message, reply=None):
+        super().__init__(message)
+        self.reply = reply or {}
 
 
 # --- session -----------------------------------------------------------------
@@ -803,10 +807,21 @@ def cmd_do(env, req):
             try:
                 table[step["cmd"]](env, step)
             except Fail as error:
-                raise Fail(f'step {number} of {len(steps)} ({step.get("cmd")}) failed: {error}. '
-                           f"{number - 1} step(s) before it were done; run `observe` to see where things stand")
+                failed = (number, error)
+                break
+        else:
+            failed = None
     finally:
         IN_BATCH = False
+    if failed:
+        # Where things stand, so that the caller need not observe again.
+        number, error = failed
+        try:
+            now = observe(env, brief=True)
+        except Fail:
+            now = {}
+        raise Fail(f'step {number} of {len(steps)} ({steps[number - 1].get("cmd")}) failed: {error}. '
+                   f"{number - 1} step(s) before it were done", {**now, "steps": number - 1})
     result = observe(env, brief=True)
     result["steps"] = len(steps)
     return result
@@ -990,7 +1005,7 @@ def main():
         request = json.load(sys.stdin)
         response = {"ok": True, **handle(request)}
     except Fail as error:
-        response = {"ok": False, "error": str(error)}
+        response = {"ok": False, "error": str(error), **error.reply}
     except Exception as error:  # report, never hang the client on a traceback
         response = {"ok": False, "error": f"{type(error).__name__}: {error}"}
     json.dump(response, sys.stdout, ensure_ascii=False)

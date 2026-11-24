@@ -139,16 +139,27 @@ bash-screen do click e7 then type "Ada" then key tab return then wait --text Sav
 ```
 
 - The steps are `click`, `type`, `key`, `scroll`, `drag` and `wait`, with
-  their usual arguments. Other commands are rejected before anything is sent.
+  their usual arguments. The last step can also be `text` or `look`, with
+  their usual arguments: it reads the window once the other steps have run,
+  and its output follows the observation. Other commands are rejected before
+  anything is sent.
 - Steps are separated by the word `then` on its own. The single word `then`
   can therefore not be typed in a batch; text that only contains it can.
 - Nothing is observed between the steps, so refs mean what they meant in the
   observation made before the batch, for every step. A ref to an element
   that has since disappeared fails.
 - A failing step ends the batch. The error names the step and says how many
-  were done before it; nothing is undone.
-- With `--json`, the reply has `steps`, the number of steps that ran. The
+  were done before it; nothing is undone. The observation of the window as
+  it is then follows the error, so no `observe` is needed to see what the
+  steps before it did.
+- With `--json`, the reply has `steps`, the number of steps that ran; after a
+  failure, the number done before the failing one, with `ok` false and
+  `error`. The reading of a last `text` or `look` step is under `then`. The
   reply of `wait` has `waited`, in seconds.
+
+```sh
+bash-screen do type --ref e7 "ada@example.org" then click --name Save then wait --text Saved then text
+```
 
 ## Input from a viewer
 
