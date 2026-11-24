@@ -1,5 +1,6 @@
 //! bash-screen: operate GUI apps on a remote Linux host over SSH.
 
+mod calls;
 mod config;
 mod herdr;
 mod input;
@@ -202,6 +203,14 @@ enum Cmd {
     },
     /// List the windows in the session
     Windows,
+    /// Show where the time of the recent calls to the session went: inside
+    /// bash-screen, or between calls, in the agent. Covers the latest stretch
+    /// of calls without a 10-minute pause
+    Stats {
+        /// The calls of the last this many minutes instead
+        #[arg(long)]
+        since: Option<f64>,
+    },
     /// Print the commands a person needs to take over the session with a VNC client
     Vnc,
     /// Serve a full-resolution HTML viewer on localhost. Open the printed URL
@@ -387,6 +396,33 @@ impl std::fmt::Display for Reported {
 }
 
 impl std::error::Error for Reported {}
+
+/// How a command is called in the record of calls, and how many steps it
+/// carried; None for commands that are not an agent's.
+fn recorded_as(command: &Cmd) -> Option<(&'static str, u64)> {
+    Some(match command {
+        Cmd::Start => ("start", 1),
+        Cmd::Stop { .. } => ("stop", 1),
+        Cmd::Status => ("status", 1),
+        Cmd::Sessions => ("sessions", 1),
+        Cmd::Observe { .. } => ("observe", 1),
+        Cmd::Text => ("text", 1),
+        Cmd::Look { viewer: false, .. } => ("look", 1),
+        Cmd::Click { .. } => ("click", 1),
+        Cmd::Drag { .. } => ("drag", 1),
+        Cmd::Type { .. } => ("type", 1),
+        Cmd::Key { .. } => ("key", 1),
+        Cmd::Scroll { .. } => ("scroll", 1),
+        Cmd::Launch { .. } => ("launch", 1),
+        Cmd::Wait { .. } => ("wait", 1),
+        Cmd::Windows => ("windows", 1),
+        Cmd::Do { steps } => (
+            "do",
+            steps.iter().filter(|w| *w == "then").count() as u64 + 1,
+        ),
+        _ => return None,
+    })
+}
 
 /// Change the default host and its settings, keeping what is not given.
 fn write_config(
@@ -679,6 +715,10 @@ fn run() -> Result<()> {
         return web::run(target, port, interval, open, json_output);
     }
     let config_max_px = config.preview_max_px;
+    let record_key = format!("{}/{}", target.host, target.session);
+    if let Cmd::Stats { since } = cli.command {
+        return calls::show(&record_key, &target.label(), since, json_output);
+    }
 
     if let Cmd::Look { viewer: true, .. } = cli.command {
         herdr::viewer_seen(follow.as_deref(), &target)?;
@@ -696,6 +736,7 @@ fn run() -> Result<()> {
                 | Cmd::Input { .. }
                 | Cmd::Look { viewer: true, .. }
                 | Cmd::Sessions
+                | Cmd::Stats { .. }
         )
     {
         if let Some(note) = herdr::ensure_preview_pane(&config.preview_direction, &target)? {
@@ -708,9 +749,17 @@ fn run() -> Result<()> {
     let session_name = target.session.clone();
     let remote = Remote::new(target);
     let observation = |reply: Value| show(&reply, json_output, print_observation);
+    // A viewer pane's calls are not an agent's.
+    if let Some((command, steps)) = recorded_as(&cli.command).filter(|_| follow.is_none()) {
+        calls::begin(&record_key, command, steps);
+    }
 
     match cli.command {
-        Cmd::Config { .. } | Cmd::Preview { .. } | Cmd::Web { .. } | Cmd::Skill { .. } => {
+        Cmd::Config { .. }
+        | Cmd::Preview { .. }
+        | Cmd::Web { .. }
+        | Cmd::Skill { .. }
+        | Cmd::Stats { .. } => {
             unreachable!()
         }
         Cmd::Init { .. } => {
@@ -994,6 +1043,7 @@ steps, and text or look the last one",
 
 fn main() {
     let result = run();
+    calls::finish(result.is_ok());
     if let Err(error) = result {
         if !error.is::<Reported>() {
             eprintln!("bash-screen: {error:#}");

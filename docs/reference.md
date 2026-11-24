@@ -161,6 +161,32 @@ bash-screen do click e7 then type "Ada" then key tab return then wait --text Sav
 bash-screen do type --ref e7 "ada@example.org" then click --name Save then wait --text Saved then text
 ```
 
+## Where the time goes
+
+`bash-screen stats` sums up the recent calls to a session: how many there
+were, how long they took inside bash-screen, and how much time passed
+between them, which is time spent in the agent and the tools that run it.
+It covers the latest stretch of calls without a pause of 10 minutes, or the
+last minutes given with `--since <minutes>`.
+
+```text
+31 calls to my-host over 6m 40s, the last 2m 5s ago
+  in bash-screen  24.1s, 0.8s a call
+  between calls   6m 16s, 12.5s on average, the longest 48.0s
+  failed          3
+  commands        observe 9, click 8, text 6, do 4 (15 steps), look 3, launch 1
+```
+
+- Each call is recorded on this machine, in
+  `~/.local/state/bash-screen/calls.jsonl`: the session, the command, when
+  it started, how long it took, how many steps a batch had, and whether it
+  worked. What was typed is not recorded. Past 1 MB the file moves aside to
+  `calls.jsonl.1`, replacing the one before.
+- Calls from a viewer, such as the preview, are not recorded, and neither are
+  `init` and `setup`.
+- When several agents use one session, their calls are counted together and
+  the time between calls means less.
+
 ## Input from a viewer
 
 `bash-screen input` is for a program that shows the screen to a person, such

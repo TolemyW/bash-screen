@@ -73,6 +73,7 @@ bash-screen drag 200,300 600,300
 bash-screen text               # the text of the page
 bash-screen look               # screenshot saved locally as PNG
 bash-screen wait --text Saved  # until an element contains the text; also --gone, --title
+bash-screen stats              # where the time of the recent calls went
 bash-screen stop
 ```
 
