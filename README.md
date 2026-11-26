@@ -73,14 +73,15 @@ bash-screen drag 200,300 600,300
 bash-screen text               # the text of the page
 bash-screen look               # screenshot saved locally as PNG
 bash-screen wait --text Saved  # until an element contains the text; also --gone, --title
+bash-screen stats              # where the time of the recent calls went
 bash-screen stop
 ```
 
 Several steps can go in one command, which saves a round trip and an
-observation for each:
+observation for each. The last step can read the result:
 
 ```sh
-bash-screen do click e7 then type "Ada" then key tab return then wait --text Saved
+bash-screen do click e7 then type "Ada" then key tab return then wait --text Saved then text
 ```
 
 - Every action prints what it changed in the window, or the whole list of
@@ -91,8 +92,9 @@ bash-screen do click e7 then type "Ada" then key tab return then wait --text Sav
 - `wait` without a condition waits until the screen stops changing. It fails
   after `--timeout` seconds (15 by default).
 - In `do`, the steps are `click`, `type`, `key`, `scroll`, `drag` and `wait`,
-  separated by the word `then`. Their refs are the ones you saw before the
-  command. If a step fails, the ones after it are not run.
+  separated by the word `then`, and the last one can be `text` or `look`.
+  Their refs are the ones you saw before the command. If a step fails, the
+  ones after it are not run, and the error comes with the window as it is.
 - `--json` on any command gives the reply as one line of JSON. For `look` the
   JSON names the saved file.
 - If an app misbehaves when its elements are read, start it with

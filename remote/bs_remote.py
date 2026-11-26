@@ -41,12 +41,29 @@ SESSION = SDIR = RUN = ENVFILE = EVENTS = REFS = FF_PROFILE = None
 # Set while a batch of steps runs (see cmd_do): single steps do not observe.
 IN_BATCH = False
 
+# Set while a batch runs whose caller is shown the window when a step fails
+# (see cmd_do): its errors then need no advice to observe.
+SHOWN_ON_FAILURE = False
+
+# Set when agent-desktop did not return in time: the app or the
+# accessibility channel hangs, and reading the window again would wait too.
+HUNG = False
+
+
+def see_observe(advice):
+    """Advice to observe, unless the window comes with the error anyway."""
+    return "" if SHOWN_ON_FAILURE else f"; {advice}"
+
 # Roles that carry no information for an agent unless they have a name.
 NOISE_ROLES = {"group", "unknown", "separator", "scrollarea", "menu", "toolbar", "tablist"}
 
 
 class Fail(Exception):
-    pass
+    """A failure to report. `reply` holds fields to send along with the error."""
+
+    def __init__(self, message, reply=None):
+        super().__init__(message)
+        self.reply = reply or {}
 
 
 # --- session -----------------------------------------------------------------
@@ -140,6 +157,8 @@ def ad(env, *args, timeout=30):
             ["agent-desktop", *args], capture_output=True, text=True, env=env, timeout=timeout
         )
     except subprocess.TimeoutExpired:
+        global HUNG
+        HUNG = True
         return {"ok": False, "error": {"code": "TIMEOUT", "message": "agent-desktop did not return"}}
     try:
         return json.loads(done.stdout)
@@ -338,11 +357,11 @@ def target_of(env, req):
             return {"ad": short, "shown": short}
         seen = last_observation()
         if seen is None:
-            raise Fail("no observation yet: run `observe` before using a ref")
+            raise Fail("no observation yet" + see_observe("run `observe` before using a ref"))
         for element in seen["elements"]:
             if element["id"] == short:
                 return {"ad": element["ad"], "shown": short, "id": short, "all": seen.get("all", False)}
-        raise Fail(f"{short} is not in the window any more; run `observe` for the current refs")
+        raise Fail(f"{short} is not in the window any more" + see_observe("run `observe` for the current refs"))
     if req.get("name"):
         return find_by_name(env, req["name"])
     return None
@@ -359,10 +378,10 @@ def find_by_name(env, wanted):
     low = wanted.lower()
     found = [e for e in elements if e["name"].lower() == low] or [e for e in elements if low in e["name"].lower()]
     if not found:
-        raise Fail(f"no element is named {quoted}; run `observe` to see the names")
+        raise Fail(f"no element is named {quoted}" + see_observe("run `observe` to see the names"))
     if len(found) > 1:
         some = "; ".join(e["line"] for e in found[:6]) + ("; ..." if len(found) > 6 else "")
-        raise Fail(f"{len(found)} elements are named {quoted} ({some}); run `observe` and use a ref")
+        raise Fail(f"{len(found)} elements are named {quoted} ({some})" + see_observe("run `observe` and use a ref"))
     return {"ad": found[0]["ad"], "shown": quoted, "centre": centre(found[0]["bounds"])}
 
 
@@ -384,7 +403,8 @@ def centre_of(env, target):
             for element in elements:
                 if element.get("id") == target["id"]:
                     return centre(element["bounds"])
-    raise Fail(f"{target['shown']}: {ad_error(envelope)} (the element may have gone; run `observe`)")
+    raise Fail(f"{target['shown']}: {ad_error(envelope)} (the element may have gone"
+               + see_observe("run `observe`") + ")")
 
 
 # --- pixels ------------------------------------------------------------------
@@ -789,13 +809,16 @@ def cmd_do(env, req):
 
     Nothing observes while the steps run, so their refs are the ones of the
     observation the caller last saw, whatever the steps change. A step aimed
-    at a name looks for it when its turn comes.
+    at a name looks for it when its turn comes. With `show_on_failure`, a
+    failed step's error comes with the window as it is then.
     """
-    global IN_BATCH
+    global IN_BATCH, SHOWN_ON_FAILURE, HUNG
     steps = req.get("steps") or []
-    IN_BATCH = True
+    show = bool(req.get("show_on_failure"))
+    IN_BATCH, SHOWN_ON_FAILURE, HUNG = True, show, False
     table = {"click": cmd_click, "type": cmd_type, "key": cmd_key, "scroll": cmd_scroll,
              "drag": cmd_drag, "wait": cmd_wait}
+    failed = None
     try:
         for number, step in enumerate(steps, 1):
             if step.get("cmd") not in table:
@@ -803,10 +826,29 @@ def cmd_do(env, req):
             try:
                 table[step["cmd"]](env, step)
             except Fail as error:
-                raise Fail(f'step {number} of {len(steps)} ({step.get("cmd")}) failed: {error}. '
-                           f"{number - 1} step(s) before it were done; run `observe` to see where things stand")
+                failed = (number, error)
+                break
     finally:
-        IN_BATCH = False
+        IN_BATCH = SHOWN_ON_FAILURE = False
+    if failed:
+        number, error = failed
+        told = (f'step {number} of {len(steps)} ({steps[number - 1].get("cmd")}) failed: {error}. '
+                f"{number - 1} step(s) before it were done")
+        if not show:
+            raise Fail(told + "; run `observe` to see where things stand")
+        if HUNG:
+            # Reading the window would wait on the same hang.
+            raise Fail(told + "; the window was not read again, because the app did not answer",
+                       {"steps": number - 1})
+        # Where things stand, so that the caller need not observe again. A
+        # step may have acted in part before it failed; let that settle.
+        time.sleep(SETTLE_SECONDS)
+        try:
+            now = observe(env, brief=True)
+        except Exception as trouble:
+            raise Fail(told + f"; reading the window then failed too ({type(trouble).__name__}: {trouble})",
+                       {"steps": number - 1})
+        raise Fail(told + "; what changed in the window is below", {**now, "steps": number - 1})
     result = observe(env, brief=True)
     result["steps"] = len(steps)
     return result
@@ -990,7 +1032,7 @@ def main():
         request = json.load(sys.stdin)
         response = {"ok": True, **handle(request)}
     except Fail as error:
-        response = {"ok": False, "error": str(error)}
+        response = {"ok": False, "error": str(error), **error.reply}
     except Exception as error:  # report, never hang the client on a traceback
         response = {"ok": False, "error": f"{type(error).__name__}: {error}"}
     json.dump(response, sys.stdout, ensure_ascii=False)

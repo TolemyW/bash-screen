@@ -122,8 +122,21 @@ impl Remote {
             )
         })?;
         if response["ok"].as_bool() != Some(true) {
-            bail!("{}", response["error"].as_str().unwrap_or("remote error"));
+            return Err(HelperError(response).into());
         }
         Ok(response)
     }
 }
+
+/// The helper answered, and said the request failed. The reply can hold more
+/// than the message, such as where things stand after a failed batch.
+#[derive(Debug)]
+pub struct HelperError(pub Value);
+
+impl std::fmt::Display for HelperError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.0["error"].as_str().unwrap_or("remote error"))
+    }
+}
+
+impl std::error::Error for HelperError {}

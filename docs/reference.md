@@ -131,24 +131,66 @@ then do not see that text either.
   stops moving, such as one with a blinking caret or a clock, never becomes
   stable.
 
-`bash-screen do` sends several steps as one request and observes once at the
-end:
+`bash-screen do` sends several actions as one request and observes once at
+the end:
 
 ```sh
 bash-screen do click e7 then type "Ada" then key tab return then wait --text Saved
 ```
 
 - The steps are `click`, `type`, `key`, `scroll`, `drag` and `wait`, with
-  their usual arguments. Other commands are rejected before anything is sent.
+  their usual arguments. The last step can also be `text` or `look`, with
+  their usual arguments: it reads the window in a second request once the
+  other steps have run, and its output follows the observation. Other
+  commands, and arguments that cannot be used, are rejected before anything
+  is sent.
 - Steps are separated by the word `then` on its own. The single word `then`
   can therefore not be typed in a batch; text that only contains it can.
 - Nothing is observed between the steps, so refs mean what they meant in the
   observation made before the batch, for every step. A ref to an element
   that has since disappeared fails.
 - A failing step ends the batch. The error names the step and says how many
-  were done before it; nothing is undone.
-- With `--json`, the reply has `steps`, the number of steps that ran. The
-  reply of `wait` has `waited`, in seconds.
+  were done before it; nothing is undone. What changed in the window follows
+  the error, so no `observe` is needed to see what the steps before it did.
+  When the step failed because the app did not answer, the window is not
+  read again, since that would wait as long.
+- When the actions all ran but the last `text` or `look` fails, the
+  observation is printed and the error says that every step was done.
+- With `--json`, the reply has `steps`, the number of actions that ran;
+  after a failure, the number done before the failing one, with `ok` false
+  and `error`. The reading of a last `text` or `look` step is under `then`;
+  if it failed, `then` has `ok` false and `error`. The reply of `wait` has
+  `waited`, in seconds.
+
+```sh
+bash-screen do type --ref e7 "ada@example.org" then click --name Save then wait --text Saved then text
+```
+
+## Where the time goes
+
+`bash-screen stats` sums up the recent calls to a session: how many there
+were, how long they took inside bash-screen, and how much time passed
+between them, which is time spent in the agent and the tools that run it.
+It covers the latest stretch of calls without a pause of 10 minutes, or the
+last minutes given with `--since <minutes>`.
+
+```text
+31 calls to my-host over 6m 40s, the last 2m 5s ago
+  in bash-screen  24.1s, 0.8s a call
+  between calls   6m 16s, 12.5s on average, the longest 48.0s
+  failed          3
+  commands        observe 9, click 8, text 6, do 4 (15 steps), look 3, launch 1
+```
+
+- Each call is recorded on this machine, in
+  `~/.local/state/bash-screen/calls.jsonl`: the session, the command, when
+  it started, how long it took, how many steps a batch had, and whether it
+  worked. What was typed is not recorded. Past 1 MB the file moves aside to
+  `calls.jsonl.1`, replacing the one before.
+- Calls from a viewer, such as the preview, are not recorded, and neither are
+  `init` and `setup`.
+- When several agents use one session, their calls are counted together and
+  the time between calls means less.
 
 ## Input from a viewer
 

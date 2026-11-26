@@ -25,29 +25,34 @@ and can be run again safely. If it reports missing packages, pass its
 If the command itself is missing, see
 https://github.com/TolemyW/bash-screen#quick-start.
 
-## Reading pages and filling forms
+## Make few calls
 
-Use the remote accessibility tree for routine browser work, including when a
-person has the HTML viewer open. The viewer displays a remote screen image.
+A command takes a fraction of a second on the host, but each tool call you
+make to run one costs several seconds more. The number of your tool calls,
+not of commands, decides how long a task takes. So:
 
-- Read page content with `bash-screen text`. Use the observation from launch
-  or `bash-screen observe` to find fields, buttons and their refs.
-- Fill fields with `type --ref`, open choices with `click`, and read the
-  returned changes for updated values and newly available options.
-- Before submission, check the exposed values against the requested ones.
-  Use `text` for inline validation messages and input contents, or
-  `observe --all` when you need surrounding labels to identify a field.
-  After submission, check the confirmation or error with `text`, or use
-  `wait --text` when the expected message is known.
-- Use `look` for a requested visual check or a specific question these
-  commands cannot answer, such as which control an overlay covers. Limit
-  it to the relevant region when its bounds are known. Resume using refs
-  and text once the question is resolved.
+- Put the steps you already know into one `do`, and end it with `then text`
+  when you need to read the result.
+- Do not check each step with a separate call. Every action prints what it
+  changed, such as `~ [e26] textfield "Email" = "ada@example.org"`; that is
+  the check.
+- One shell call can run several commands: `bash-screen observe && bash-screen text`.
+- A form takes about three calls: one to see its elements, one `do` that
+  fills it and ends with `text` to check the values, and one that submits,
+  waits for the result and reads it.
 
 ## The loop
 
 ```sh
-bash-screen launch -- firefox https://example.org
+bash-screen launch -- firefox https://example.org   # prints the elements, each with a ref like e12
+bash-screen do type --ref e7 "Ada" then type --ref e8 "ada@example.org" then click --name Role then click --name Admin then text
+# compare the values in the text with the ones asked for, then:
+bash-screen do click --name Submit then wait --text Saved then text
+```
+
+Single commands, for when one step is all you know:
+
+```sh
 bash-screen observe            # elements of the current window, each with a ref like e12
 bash-screen click e12          # or a screen position: bash-screen click 640,400
 bash-screen click --name Save  # or the one element with that name
@@ -57,25 +62,53 @@ bash-screen scroll --dy -5     # negative is down; --ref e40 scrolls an element 
 bash-screen text               # the text of the page, to read it
 ```
 
-## Do several steps at once
-
-When you already know the next few steps, send them as one command. It is one
-round trip and prints one observation at the end:
+## Batches
 
 ```sh
-bash-screen do click e7 then type "Ada" then key tab then type "ada@example.org" then key return then wait --text Saved
+bash-screen do click e7 then type "Ada" then key tab then type "ada@example.org" then key return then wait --text Saved then text
 ```
 
 - Steps are `click`, `type`, `key`, `scroll`, `drag` and `wait`, written as
-  usual and separated by the bare word `then`.
+  usual and separated by the bare word `then`. The last step can also be
+  `text`, or `look` with its usual options.
 - Refs in every step are the ones from the observation you last saw, even
   though earlier steps change the window.
 - A step with `--name` looks for the element when its turn comes, so it can
-  aim at something an earlier step brings up:
-  `bash-screen do click e7 then click --name "Confirm"`.
-- If a step fails, the later ones are not run and the error names the step.
-  Run `observe` to see where things stand.
-- Stop the batch where you need to read something before deciding.
+  aim at something an earlier step brings up, such as the option of a
+  drop-down list: `bash-screen do click --name Project then click --name "my-project"`.
+- If a step fails, the later ones are not run. The error names the step and
+  is followed by what the steps before it changed, so you need no `observe`.
+  If only the last `text` or `look` fails, the error says all steps were
+  done: do not run them again.
+- End the batch where you need to read something before deciding.
+
+## When an element is not found
+
+Change the method instead of trying the same one again:
+
+1. `--name` matches several elements: the error lists them; use the ref.
+2. `--name` matches none: find the element in the list you have, or in
+   `observe --all`, and use its ref or its exact name.
+3. It is not in any list (some custom drop-downs and canvases): take
+   `look --region` around where it should be, and click the position.
+
+Do not try more than one other name before moving to the next way.
+
+## Reading pages and filling forms
+
+Use the remote accessibility tree for routine browser work, including when a
+person has the HTML viewer open. The viewer displays a remote screen image.
+
+- Read page content with `text`. It shows the content of inputs in `[ ]` and
+  inline validation messages, so it is also how you check a form before
+  submitting it. Use `observe --all` when you need the labels around a field
+  to tell which one it is.
+- Check the values once, before submitting, and the confirmation or error
+  once, after it. Steps in between need no extra reading.
+- Use `look` for a requested visual check or a specific question these
+  commands cannot answer, such as which control an overlay covers. Limit
+  it to the relevant region when its bounds are known. Resume using refs
+  and text once the question is resolved.
 
 ## Wait instead of guessing
 

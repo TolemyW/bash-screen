@@ -1,5 +1,6 @@
 //! bash-screen: operate GUI apps on a remote Linux host over SSH.
 
+mod calls;
 mod config;
 mod herdr;
 mod input;
@@ -10,7 +11,7 @@ mod web;
 use anyhow::{bail, Context, Result};
 use base64::Engine;
 use clap::{Parser, Subcommand};
-use remote::Remote;
+use remote::{HelperError, Remote};
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -192,14 +193,24 @@ enum Cmd {
     },
     /// Run several steps in one go, separated by the word "then", and observe
     /// once at the end: bash-screen do click e7 then type hello then key return
-    /// then wait --text Saved. Steps: click, type, key, scroll, drag, wait.
-    /// Refs keep the meaning they had in the observation you last saw
+    /// then wait --text Saved. Steps: click, type, key, scroll, drag, wait;
+    /// the last step can also be text or look, to read the result in the same
+    /// call. Refs keep the meaning they had in the observation you last saw.
+    /// When a step fails, the error comes with the window as it is then
     Do {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
         steps: Vec<String>,
     },
     /// List the windows in the session
     Windows,
+    /// Show where the time of the recent calls to the session went: inside
+    /// bash-screen, or between calls, in the agent. Covers the latest stretch
+    /// of calls without a 10-minute pause
+    Stats {
+        /// The calls of the last this many minutes instead
+        #[arg(long)]
+        since: Option<f64>,
+    },
     /// Print the commands a person needs to take over the session with a VNC client
     Vnc,
     /// Serve a full-resolution HTML viewer on localhost. Open the printed URL
@@ -284,20 +295,21 @@ fn parse_numbers(text: &str, count: usize, what: &str) -> Result<Vec<i64>> {
 /// How many recent actions a viewer pane is sent with each picture.
 const VIEWER_EVENTS: u32 = 60;
 
-fn look(
+/// Take a screenshot and save it as PNG. The reply comes back without the
+/// picture and with its `path`, and with how many bytes travelled.
+fn take_look(
     remote: &Remote,
-    region: Option<String>,
+    region: Option<Vec<i64>>,
     scale: f64,
     output: Option<PathBuf>,
-    json_output: bool,
-    viewer: Option<(&str, &str)>,
-) -> Result<()> {
+    events: bool,
+) -> Result<(Value, usize)> {
     let mut request = json!({"cmd": "look", "scale": scale});
-    if viewer.is_some() {
+    if events {
         request["events"] = json!(VIEWER_EVENTS);
     }
     if let Some(region) = region {
-        request["region"] = json!(parse_numbers(&region, 4, "--region")?);
+        request["region"] = json!(region);
     }
     let mut reply = remote.call(request)?;
     let webp = base64::engine::general_purpose::STANDARD
@@ -315,29 +327,119 @@ fn look(
         }
     };
     image.save_with_format(&path, image::ImageFormat::Png)?;
+    // The picture is in the file; the reply says where it is.
+    reply.as_object_mut().unwrap().remove("image_webp");
+    reply["path"] = json!(path.display().to_string());
+    Ok((reply, webp.len()))
+}
+
+fn parse_region(region: Option<String>) -> Result<Option<Vec<i64>>> {
+    region
+        .map(|region| parse_numbers(&region, 4, "--region"))
+        .transpose()
+}
+
+/// Fail now, rather than after a batch has acted, if a picture cannot be saved there.
+fn check_output(output: &Option<PathBuf>) -> Result<()> {
+    let Some(dir) = output.as_deref().and_then(|path| path.parent()) else {
+        return Ok(());
+    };
+    if !dir.as_os_str().is_empty() && !dir.is_dir() {
+        bail!("-o: there is no directory {}", dir.display());
+    }
+    Ok(())
+}
+
+fn print_look(reply: &Value, bytes: usize, scale: f64) {
+    let origin = &reply["origin"];
+    println!("{}", reply["path"].as_str().unwrap_or("?"));
+    println!(
+        "{}x{} px, transferred {bytes} bytes; screen position = image position / {scale} + ({},{})",
+        reply["size"][0], reply["size"][1], origin[0], origin[1]
+    );
+}
+
+fn look(
+    remote: &Remote,
+    region: Option<String>,
+    scale: f64,
+    output: Option<PathBuf>,
+    json_output: bool,
+    viewer: Option<(&str, &str)>,
+) -> Result<()> {
+    let region = parse_region(region)?;
+    let (mut reply, bytes) = take_look(remote, region, scale, output, viewer.is_some())?;
     if json_output {
-        // The picture is in the file; the reply says where it is.
-        reply.as_object_mut().unwrap().remove("image_webp");
-        reply["path"] = json!(path.display().to_string());
         if let Some((host, session)) = viewer {
             reply["host"] = json!(host);
             reply["session"] = json!(session);
         }
         println!("{reply}");
-        return Ok(());
+    } else {
+        print_look(&reply, bytes, scale);
     }
-    let origin = &reply["origin"];
-    println!("{}", path.display());
-    println!(
-        "{}x{} px, transferred {} bytes; screen position = image position / {} + ({},{})",
-        reply["size"][0],
-        reply["size"][1],
-        webp.len(),
-        scale,
-        origin[0],
-        origin[1]
-    );
     Ok(())
+}
+
+fn print_text(reply: &Value) {
+    println!(
+        "window: {} ({})",
+        reply["title"].as_str().unwrap_or("?"),
+        reply["app"].as_str().unwrap_or("?")
+    );
+    if let Some(note) = reply["note"].as_str() {
+        println!("({note})");
+    }
+    println!("{}", reply["text"].as_str().unwrap_or(""));
+}
+
+/// What the last step of a batch reads, after the batch has run.
+enum Reading {
+    Text,
+    Look {
+        region: Option<Vec<i64>>,
+        scale: f64,
+        output: Option<PathBuf>,
+    },
+}
+
+/// An error whose message has already been printed, with what came with it.
+#[derive(Debug)]
+struct Reported;
+
+impl std::fmt::Display for Reported {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("failed")
+    }
+}
+
+impl std::error::Error for Reported {}
+
+/// How a command is called in the record of calls, and how many steps it
+/// carried; None for commands that are not an agent's.
+fn recorded_as(command: &Cmd) -> Option<(&'static str, u64)> {
+    Some(match command {
+        Cmd::Start => ("start", 1),
+        Cmd::Stop { .. } => ("stop", 1),
+        Cmd::Status => ("status", 1),
+        Cmd::Sessions => ("sessions", 1),
+        Cmd::Observe { .. } => ("observe", 1),
+        Cmd::Text => ("text", 1),
+        Cmd::Look { viewer: false, .. } => ("look", 1),
+        Cmd::Click { .. } => ("click", 1),
+        Cmd::Drag { .. } => ("drag", 1),
+        Cmd::Type { .. } => ("type", 1),
+        Cmd::Key { .. } => ("key", 1),
+        Cmd::Scroll { .. } => ("scroll", 1),
+        Cmd::Launch { .. } => ("launch", 1),
+        Cmd::Wait { .. } => ("wait", 1),
+        Cmd::Windows => ("windows", 1),
+        Cmd::Do { steps } => (
+            "do",
+            steps.iter().filter(|w| *w == "then").count() as u64 + 1,
+        ),
+        _ => return None,
+    })
 }
 
 /// Change the default host and its settings, keeping what is not given.
@@ -631,6 +733,10 @@ fn run() -> Result<()> {
         return web::run(target, port, interval, open, json_output);
     }
     let config_max_px = config.preview_max_px;
+    let record_key = format!("{}/{}", target.host, target.session);
+    if let Cmd::Stats { since } = cli.command {
+        return calls::show(&record_key, &target.label(), since, json_output);
+    }
 
     if let Cmd::Look { viewer: true, .. } = cli.command {
         herdr::viewer_seen(follow.as_deref(), &target)?;
@@ -648,6 +754,7 @@ fn run() -> Result<()> {
                 | Cmd::Input { .. }
                 | Cmd::Look { viewer: true, .. }
                 | Cmd::Sessions
+                | Cmd::Stats { .. }
         )
     {
         if let Some(note) = herdr::ensure_preview_pane(&config.preview_direction, &target)? {
@@ -660,9 +767,17 @@ fn run() -> Result<()> {
     let session_name = target.session.clone();
     let remote = Remote::new(target);
     let observation = |reply: Value| show(&reply, json_output, print_observation);
+    // A viewer pane's calls are not an agent's.
+    if let Some((command, steps)) = recorded_as(&cli.command).filter(|_| follow.is_none()) {
+        calls::begin(&record_key, command, steps);
+    }
 
     match cli.command {
-        Cmd::Config { .. } | Cmd::Preview { .. } | Cmd::Web { .. } | Cmd::Skill { .. } => {
+        Cmd::Config { .. }
+        | Cmd::Preview { .. }
+        | Cmd::Web { .. }
+        | Cmd::Skill { .. }
+        | Cmd::Stats { .. } => {
             unreachable!()
         }
         Cmd::Init { .. } => {
@@ -748,17 +863,7 @@ fn run() -> Result<()> {
         Cmd::Observe { all } => observation(remote.call(json!({"cmd": "observe", "all": all}))?),
         Cmd::Text => {
             let reply = remote.call(json!({"cmd": "text"}))?;
-            show(&reply, json_output, |reply| {
-                println!(
-                    "window: {} ({})",
-                    reply["title"].as_str().unwrap_or("?"),
-                    reply["app"].as_str().unwrap_or("?")
-                );
-                if let Some(note) = reply["note"].as_str() {
-                    println!("({note})");
-                }
-                println!("{}", reply["text"].as_str().unwrap_or(""));
-            });
+            show(&reply, json_output, print_text);
         }
         Cmd::Look {
             region,
@@ -777,6 +882,8 @@ fn run() -> Result<()> {
         | Cmd::Wait { .. }) => observation(remote.call(step_request(command)?)?),
         Cmd::Do { steps } => {
             let mut requests = Vec::new();
+            let mut reading = None;
+            let count = steps.split(|word| word == "then").count();
             for (index, words) in steps.split(|word| word == "then").enumerate() {
                 let number = index + 1;
                 if words.is_empty() {
@@ -794,16 +901,101 @@ fn run() -> Result<()> {
                     | Cmd::Type { .. }
                     | Cmd::Key { .. }
                     | Cmd::Scroll { .. }
-                    | Cmd::Wait { .. }) => requests.push(
-                        step_request(command).with_context(|| format!("step {number}"))?,
+                    | Cmd::Wait { .. }) => requests
+                        .push(step_request(command).with_context(|| format!("step {number}"))?),
+                    Cmd::Text | Cmd::Look { viewer: false, .. } if number < count => bail!(
+                        "step {number} ({}): text and look can only be the last step",
+                        words[0]
                     ),
+                    Cmd::Text => reading = Some(Reading::Text),
+                    Cmd::Look {
+                        region,
+                        scale,
+                        output,
+                        viewer: false,
+                    } => {
+                        let region =
+                            parse_region(region).with_context(|| format!("step {number}"))?;
+                        check_output(&output).with_context(|| format!("step {number}"))?;
+                        reading = Some(Reading::Look {
+                            region,
+                            scale,
+                            output,
+                        })
+                    }
                     _ => bail!(
-                        "step {number} ({}): only click, type, key, scroll, drag and wait can be steps",
+                        "step {number} ({}): only click, type, key, scroll, drag and wait can be \
+steps, and text or look the last one",
                         words[0]
                     ),
                 }
             }
-            observation(remote.call(json!({"cmd": "do", "steps": requests}))?);
+            if requests.is_empty() {
+                bail!("give at least one step to do before {}", steps[0]);
+            }
+            let request = json!({"cmd": "do", "steps": requests, "show_on_failure": true});
+            let mut reply = match remote.call(request) {
+                Ok(reply) => reply,
+                Err(error) => {
+                    // A failed batch says where things stand; show it with the error.
+                    let Some(now) = error
+                        .downcast_ref::<HelperError>()
+                        .map(|failed| failed.0.clone())
+                        .filter(|reply| reply.get("text").is_some())
+                    else {
+                        return Err(error);
+                    };
+                    if json_output {
+                        println!("{now}");
+                    } else {
+                        eprintln!("bash-screen: {error:#}");
+                        print_observation(&now);
+                    }
+                    return Err(Reported.into());
+                }
+            };
+            let Some(reading) = reading else {
+                observation(reply);
+                return Ok(());
+            };
+            if !json_output {
+                print_observation(&reply);
+            }
+            let read = match reading {
+                Reading::Text => remote.call(json!({"cmd": "text"})).map(|text| (text, None)),
+                Reading::Look {
+                    region,
+                    scale,
+                    output,
+                } => take_look(&remote, region, scale, output, false)
+                    .map(|(picture, bytes)| (picture, Some((bytes, scale)))),
+            };
+            match read {
+                Ok((then, look)) => {
+                    if json_output {
+                        reply["then"] = then;
+                        println!("{reply}");
+                    } else if let Some((bytes, scale)) = look {
+                        print_look(&then, bytes, scale);
+                    } else {
+                        print_text(&then);
+                    }
+                }
+                Err(error) => {
+                    // The steps took effect; say so, or the caller may run them again.
+                    let done = reply["steps"].as_u64().unwrap_or(0);
+                    let told = format!(
+                        "all {done} step(s) were done, but reading the result failed: {error:#}"
+                    );
+                    if json_output {
+                        reply["then"] = json!({"ok": false, "error": told});
+                        println!("{reply}");
+                    } else {
+                        eprintln!("bash-screen: {told}");
+                    }
+                    return Err(Reported.into());
+                }
+            }
         }
         Cmd::Launch {
             wait,
@@ -883,8 +1075,12 @@ fn run() -> Result<()> {
 }
 
 fn main() {
-    if let Err(error) = run() {
-        eprintln!("bash-screen: {error:#}");
+    let result = run();
+    calls::finish(result.is_ok());
+    if let Err(error) = result {
+        if !error.is::<Reported>() {
+            eprintln!("bash-screen: {error:#}");
+        }
         std::process::exit(1);
     }
 }
