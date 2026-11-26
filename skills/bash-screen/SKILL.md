@@ -78,6 +78,8 @@ bash-screen do click e7 then type "Ada" then key tab then type "ada@example.org"
   drop-down list: `bash-screen do click --name Project then click --name "my-project"`.
 - If a step fails, the later ones are not run. The error names the step and
   is followed by what the steps before it changed, so you need no `observe`.
+  If only the last `text` or `look` fails, the error says all steps were
+  done: do not run them again.
 - End the batch where you need to read something before deciding.
 
 ## When an element is not found

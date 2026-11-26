@@ -299,7 +299,7 @@ const VIEWER_EVENTS: u32 = 60;
 /// picture and with its `path`, and with how many bytes travelled.
 fn take_look(
     remote: &Remote,
-    region: Option<String>,
+    region: Option<Vec<i64>>,
     scale: f64,
     output: Option<PathBuf>,
     events: bool,
@@ -309,7 +309,7 @@ fn take_look(
         request["events"] = json!(VIEWER_EVENTS);
     }
     if let Some(region) = region {
-        request["region"] = json!(parse_numbers(&region, 4, "--region")?);
+        request["region"] = json!(region);
     }
     let mut reply = remote.call(request)?;
     let webp = base64::engine::general_purpose::STANDARD
@@ -333,6 +333,23 @@ fn take_look(
     Ok((reply, webp.len()))
 }
 
+fn parse_region(region: Option<String>) -> Result<Option<Vec<i64>>> {
+    region
+        .map(|region| parse_numbers(&region, 4, "--region"))
+        .transpose()
+}
+
+/// Fail now, rather than after a batch has acted, if a picture cannot be saved there.
+fn check_output(output: &Option<PathBuf>) -> Result<()> {
+    let Some(dir) = output.as_deref().and_then(|path| path.parent()) else {
+        return Ok(());
+    };
+    if !dir.as_os_str().is_empty() && !dir.is_dir() {
+        bail!("-o: there is no directory {}", dir.display());
+    }
+    Ok(())
+}
+
 fn print_look(reply: &Value, bytes: usize, scale: f64) {
     let origin = &reply["origin"];
     println!("{}", reply["path"].as_str().unwrap_or("?"));
@@ -350,6 +367,7 @@ fn look(
     json_output: bool,
     viewer: Option<(&str, &str)>,
 ) -> Result<()> {
+    let region = parse_region(region)?;
     let (mut reply, bytes) = take_look(remote, region, scale, output, viewer.is_some())?;
     if json_output {
         if let Some((host, session)) = viewer {
@@ -379,7 +397,7 @@ fn print_text(reply: &Value) {
 enum Reading {
     Text,
     Look {
-        region: Option<String>,
+        region: Option<Vec<i64>>,
         scale: f64,
         output: Option<PathBuf>,
     },
@@ -896,6 +914,9 @@ fn run() -> Result<()> {
                         output,
                         viewer: false,
                     } => {
+                        let region =
+                            parse_region(region).with_context(|| format!("step {number}"))?;
+                        check_output(&output).with_context(|| format!("step {number}"))?;
                         reading = Some(Reading::Look {
                             region,
                             scale,
@@ -912,7 +933,8 @@ steps, and text or look the last one",
             if requests.is_empty() {
                 bail!("give at least one step to do before {}", steps[0]);
             }
-            let mut reply = match remote.call(json!({"cmd": "do", "steps": requests})) {
+            let request = json!({"cmd": "do", "steps": requests, "show_on_failure": true});
+            let mut reply = match remote.call(request) {
                 Ok(reply) => reply,
                 Err(error) => {
                     // A failed batch says where things stand; show it with the error.
@@ -932,35 +954,46 @@ steps, and text or look the last one",
                     return Err(Reported.into());
                 }
             };
-            match reading {
-                None => observation(reply),
-                Some(Reading::Text) => {
-                    if !json_output {
-                        print_observation(&reply);
-                    }
-                    let text = remote.call(json!({"cmd": "text"}))?;
-                    if json_output {
-                        reply["then"] = text;
-                        println!("{reply}");
-                    } else {
-                        print_text(&text);
-                    }
-                }
-                Some(Reading::Look {
+            let Some(reading) = reading else {
+                observation(reply);
+                return Ok(());
+            };
+            if !json_output {
+                print_observation(&reply);
+            }
+            let read = match reading {
+                Reading::Text => remote.call(json!({"cmd": "text"})).map(|text| (text, None)),
+                Reading::Look {
                     region,
                     scale,
                     output,
-                }) => {
-                    if !json_output {
-                        print_observation(&reply);
-                    }
-                    let (picture, bytes) = take_look(&remote, region, scale, output, false)?;
+                } => take_look(&remote, region, scale, output, false)
+                    .map(|(picture, bytes)| (picture, Some((bytes, scale)))),
+            };
+            match read {
+                Ok((then, look)) => {
                     if json_output {
-                        reply["then"] = picture;
+                        reply["then"] = then;
+                        println!("{reply}");
+                    } else if let Some((bytes, scale)) = look {
+                        print_look(&then, bytes, scale);
+                    } else {
+                        print_text(&then);
+                    }
+                }
+                Err(error) => {
+                    // The steps took effect; say so, or the caller may run them again.
+                    let done = reply["steps"].as_u64().unwrap_or(0);
+                    let told = format!(
+                        "all {done} step(s) were done, but reading the result failed: {error:#}"
+                    );
+                    if json_output {
+                        reply["then"] = json!({"ok": false, "error": told});
                         println!("{reply}");
                     } else {
-                        print_look(&picture, bytes, scale);
+                        eprintln!("bash-screen: {told}");
                     }
+                    return Err(Reported.into());
                 }
             }
         }
